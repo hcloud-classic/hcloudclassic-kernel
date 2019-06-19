@@ -229,39 +229,6 @@ SHM_WRITE: CHILD: Writing Done
 
 
 
-
-
-# Kerrighed IPC
-
-```shell
-ipc
-├── Makefile
-├── compat.c
-├── compat_mq.c
-├── ipc_checkpoint.c
-├── ipc_checkpoint.h
-├── ipc_handler.c
-├── ipc_handler.h
-├── ipc_sysctl.c
-├── ipcmap_io_linker.c
-├── ipcmap_io_linker.h
-├── ipcns_notifier.c
-├── krgipc_mobility.c
-├── krgipc_mobility.h
-├── krgmsg.h
-├── krgsem.h
-├── krgshm.h
-├── mq_sysctl.c
-├── mqueue.c
-├── msg.c
-├── msg_handler.c
-├── msg_handler.h
-├── msg_io_linker.c
-├── msg_io_linker.h
-├── msgutil.c
-├── namespace.c
-├── sem.c
-├── sem_handler.c
 ├── sem_handler.h
 ├── semarray_io_linker.c
 ├── semarray_io_linker.h
