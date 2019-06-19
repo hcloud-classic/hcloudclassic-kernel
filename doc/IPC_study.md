@@ -1,6 +1,3 @@
-# [Kerrighed IPC](./IPC_kerrighed)
-
-# [GCC Kernel 문법 및 함수 매크로 정리](./IPC_study/gcc)
 
 # IPC(Interprocess Communicataion)
 
