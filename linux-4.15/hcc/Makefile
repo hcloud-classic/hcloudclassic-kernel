@@ -1,0 +1,1 @@
+obj-$(CONFIG_HCC_GHOTPLUG) += ghotplug/

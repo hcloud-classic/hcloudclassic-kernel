@@ -1,0 +1,17 @@
+menu "Hcloud-Classic support"
+
+config HCC
+	bool "Add the HCloud-Classic support"
+	default y
+	select HCC_GHOTPLUG
+	help
+	  Say Y if you want to use the HCloud-Classic features.
+
+config HCC_GHOTPLUG
+	bool "hcc ghotplug"
+	depends on HCC
+	help
+	  Support for nodes management
+
+endmenu
+

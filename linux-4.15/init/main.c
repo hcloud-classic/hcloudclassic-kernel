@@ -169,6 +169,10 @@ static const char *panic_later, *panic_param;
 
 extern const struct obs_kernel_param __setup_start[], __setup_end[];
 
+#ifdef CONFIG_HCC_GRPC
+extern void hcc_init(void);
+#endif
+
 static bool __init obsolete_checksetup(char *line)
 {
 	const struct obs_kernel_param *p;
@@ -1089,6 +1093,10 @@ static noinline void __init kernel_init_freeable(void)
 		ramdisk_execute_command = NULL;
 		prepare_namespace();
 	}
+
+#if defined(CONFIG_HCC) || defined(CONFIG_HCC_GRPC)
+    hcc_init();
+#endif
 
 	/*
 	 * Ok, we have completed the initial bootup, and
