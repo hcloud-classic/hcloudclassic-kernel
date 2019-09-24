@@ -169,7 +169,7 @@ static const char *panic_later, *panic_param;
 
 extern const struct obs_kernel_param __setup_start[], __setup_end[];
 
-#ifdef CONFIG_HCC_GRPC
+#ifdef CONFIG_HCC
 extern void hcc_init(void);
 #endif
 
@@ -1094,8 +1094,8 @@ static noinline void __init kernel_init_freeable(void)
 		prepare_namespace();
 	}
 
-#if defined(CONFIG_HCC) || defined(CONFIG_HCC_GRPC)
-    hcc_init();
+#ifdef CONFIG_HCC
+	hcc_init();
 #endif
 
 	/*
