@@ -1,8 +1,4 @@
-//
-// Created by root on 19. 9. 23.
-//
-
-#include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/cluster_barrier.h>
 #include <hcc/hccinit.h>
 
@@ -23,8 +19,8 @@ int init_hcc_communication_system(void){
 
 #ifdef CONFIG_HCCGRPC
 err_rpc:
-#endif
     return -1;
+#endif
 }
 
 #ifdef CONFIG_HCC
