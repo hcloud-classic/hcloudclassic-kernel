@@ -3,7 +3,7 @@
 
 int init_rpc(void){
 
-    int res = 0;
+    int res;
 
     printk("HCC: init_rpc");
 
