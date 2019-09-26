@@ -13,5 +13,11 @@ config HCC_GHOTPLUG
 	help
 	  Support for nodes management
 
+config HCC_GCAP
+	bool "hcc gcap"
+	depends on HCC
+	help
+	  Support for process capability management
+
 endmenu
 
