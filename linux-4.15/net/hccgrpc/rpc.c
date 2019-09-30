@@ -1,3 +1,9 @@
+/*
+ *  Copyright (C) 2019 Innogrid
+ */
+
+/*  writen by cgs 2019 */
+
 #include <linux/module.h>
 #include <net/hccgrpc/rpc.h>
 
