@@ -19,5 +19,11 @@ config HCC_GCAP
 	help
 	  Support for process capability management
 
+config HCC_GPROC
+	bool "hcc gproc"
+	depends on HCC
+	help
+	  Support for distributed process management
+
 endmenu
 
