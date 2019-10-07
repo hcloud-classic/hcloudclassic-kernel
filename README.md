@@ -4,8 +4,14 @@
 
 ## 커널 빌드 방법
 
-아래명령어를통해빌드옵션을설정한다.
+아래 명령어를 통해 빌드 옵션을 설정한다.
 
 ```shell
 # make menuconfig
 ```
+아래 옵션을 활성화 한다.
+
+Hcloud-Classic support ---> Add the HCloud-Classic support ---> hcc ghotplug
+Hcloud-Classic support ---> Add the HCloud-Classic support ---> hcc gcap
+Hcloud-Classic support ---> Add the HCloud-Classic support ---> hcc gproc
+Networking support ---> Networking options ---> The TIPC Protocol ---> Hcloud-Classic RPC Protocol
