@@ -37,6 +37,7 @@
 #define _TIPC_HDR_H
 
 #include <linux/random.h>
+#include <net/genetlink.h>
 
 #define KEEPALIVE_MSG_MASK 0x0e080000  /* LINK_PROTOCOL + MSG_IS_KEEPALIVE */
 
@@ -59,4 +60,9 @@ static inline u32 tipc_hdr_rps_key(struct tipc_basic_hdr *hdr)
 	return key;
 }
 
+#endif
+
+#ifdef CONFIG_HCC_GPROC
+//extern int tipc_net_id;
+int tipc_net_start(struct net *net, u32 addr);
 #endif
