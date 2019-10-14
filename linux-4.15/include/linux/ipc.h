@@ -12,7 +12,11 @@
 
 /* used by in-kernel data structures */
 struct kern_ipc_perm {
+#ifdef CONFIG_HCC_IPC
+	struct mutex    mutex;
+#else
 	spinlock_t	lock;
+#endif	
 	bool		deleted;
 	int		id;
 	key_t		key;

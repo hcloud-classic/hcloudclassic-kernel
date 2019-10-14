@@ -21,7 +21,11 @@ struct sem {
 	 *  - at task exit when performing undo adjustments (see exit_sem).
 	 */
 	int	sempid;
+#ifdef CONFIG_HCC_IPC
+	struct mutex    mutex;
+#else
 	spinlock_t	lock;	/* spinlock for fine-grained semtimedop */
+#endif
 	struct list_head pending_alter; /* pending single-sop operations */
 					/* that alter the semaphore */
 	struct list_head pending_const; /* pending single-sop operations */

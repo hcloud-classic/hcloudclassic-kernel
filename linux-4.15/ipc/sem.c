@@ -128,6 +128,9 @@ struct sem_undo_list {
 	struct list_head	list_proc;
 };
 
+#ifdef CONFIG_HCC_IPC
+#define assert_mutex_locked(x) BUG_ON(!mutex_is_locked(x))
+#endif
 
 #define sem_ids(ns)	((ns)->ids[IPC_SEM_IDS])
 
@@ -1099,7 +1102,11 @@ static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 	DEFINE_WAKE_Q(wake_q);
 
 	/* Free the existing undo structures for this semaphore set.  */
+#ifdef CONFIG_HCC_IPC
+	assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 	ipc_assert_locked_object(&sma->sem_perm);
+#endif
 	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
 		list_del(&un->list_id);
 		spin_lock(&un->ulp->lock);
@@ -1305,8 +1312,11 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 	}
 
 	curr = &sma->sems[semnum];
-
+#ifdef CONFIG_HCC_IPC
+		assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 	ipc_assert_locked_object(&sma->sem_perm);
+#endif
 	list_for_each_entry(un, &sma->list_id, list_id)
 		un->semadj[semnum] = 0;
 
