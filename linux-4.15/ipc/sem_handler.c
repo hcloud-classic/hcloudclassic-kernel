@@ -1,3 +1,18 @@
+/** 
+ * HCC  modules ipc sem_handler.c
+ * 
+ * All the code for sharing IPC semaphore accross the cluster
+ */
+
+#include <linux/ipc.h>
+#include <linux/ipc_namespace.h>
+#include <linux/sem.h>
+
+#ifdef CONFIG_HCC_IPC
+#include "sem_handler.h"
+#include "util.h"
+#endif
+
 struct semhccops {
     /*Semaphore operation struct*/
 	struct hccipc_ops hcc_ops;
