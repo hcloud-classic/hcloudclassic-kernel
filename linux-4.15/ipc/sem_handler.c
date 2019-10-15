@@ -37,3 +37,35 @@ error:
 
 	return ERR_PTR(-EINVAL);
 }
+
+static void hcc_ipc_sem_unlock(struct kern_ipc_perm *ipcp)
+{
+	int index, deleted = 0;
+
+	index = ipcid_to_idx(ipcp->id);
+
+	if (ipcp->deleted)
+		deleted = 1;
+
+	if (!deleted)
+		mutex_unlock(&ipcp->mutex);
+
+	rcu_read_unlock();
+}
+
+
+static struct kern_ipc_perm *kcb_ipc_sem_findkey(struct ipc_ids *ids, key_t key)
+{
+	long *key_index;
+
+// Key intdex search
+	// key_index = ;
+
+	if (key_index)
+		id = *key_index;
+
+	if (id != -1)
+		return hcc_ipc_sem_lock(ids, id);
+
+	return NULL;
+}
