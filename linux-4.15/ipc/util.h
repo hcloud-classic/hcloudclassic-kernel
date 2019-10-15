@@ -235,4 +235,14 @@ static inline int compat_ipc_parse_version(int *cmd)
 #endif
 }
 #endif
+
+#ifdef CONFIG_HCC_IPC
+
+struct hccipc_ops {
+	/*key,mao,data implementation*/
+	struct kern_ipc_perm *(*ipc_lock)(struct ipc_ids *, int);
+	void (*ipc_unlock)(struct kern_ipc_perm *);
+	struct kern_ipc_perm *(*ipc_findkey)(struct ipc_ids *, key_t);
+};
+#endif 
 #endif
