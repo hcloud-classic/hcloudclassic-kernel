@@ -7,10 +7,14 @@
 #include <linux/kernel.h>
 #include <linux/cluster_barrier.h>
 #include <hcc/hccinit.h>
+#include <linux/workqueue.h>
 
 #ifdef CONFIG_HCCGRPC
 #include <net/hccgrpc/rpc.h>
 #endif
+
+struct workqueue_struct *hcc_wq;
+struct workqueue_struct *hcc_nb_wq;
 
 int init_hcc_communication_system(void){
 
@@ -38,14 +42,24 @@ int init_hcc_components(void){
 }
 #endif
 
+//static void __init init_ids(void)
+//{
+
+//}
+
 void __init hcc_init(void){
 
     printk(KERN_INFO "HCC: hcc_init");
 
+    hcc_wq = create_workqueue("hcc");
+    hcc_nb_wq = create_workqueue("hccNB");
+    BUG_ON(hcc_wq == NULL);
+    BUG_ON(hcc_nb_wq == NULL);
+
     if(init_hcc_communication_system())
         return;
 
-    init_cluster_barrier();
+//    init_cluster_barrier();
 
 #ifdef CONFIG_HCC
     if (init_hcc_components())
