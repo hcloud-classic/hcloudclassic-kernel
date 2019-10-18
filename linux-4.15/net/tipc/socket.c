@@ -408,7 +408,11 @@ static int tipc_sk_sock_err(struct socket *sock, long *timeout)
  *
  * Returns 0 on success, errno otherwise
  */
-static int tipc_sk_create(struct net *net, struct socket *sock,
+
+#ifndef CONFIG_HCC_GPROC
+static
+#endif
+int tipc_sk_create(struct net *net, struct socket *sock,
 			  int protocol, int kern)
 {
 	struct tipc_net *tn;
@@ -1239,7 +1243,10 @@ exit:
  *
  * Returns the number of bytes sent on success, or errno otherwise
  */
-static int tipc_sendmsg(struct socket *sock,
+#ifndef CONFIG_HCC_GPROC
+static
+#endif
+int tipc_sendmsg(struct socket *sock,
 			struct msghdr *m, size_t dsz)
 {
 	struct sock *sk = sock->sk;
@@ -2570,7 +2577,22 @@ exit:
 	sock_put(sk);
 }
 
-static int tipc_sk_publish(struct tipc_sock *tsk, uint scope,
+#ifdef CONFIG_HCC_GPROC
+int __tipc_sk_publish(struct socket *sk, uint scope, struct tipc_name_seq const *seq)
+{
+    int res = 0;
+    struct tipc_sock *tsk;
+
+    tsk = tipc_sk(sk->sk);
+    res = tipc_sk_publish(tsk, scope, seq);
+    if (res)
+        return res;
+
+    return 0;
+}
+#endif
+
+int tipc_sk_publish(struct tipc_sock *tsk, uint scope,
 			   struct tipc_name_seq const *seq)
 {
 	struct sock *sk = &tsk->sk;
