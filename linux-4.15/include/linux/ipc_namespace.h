@@ -12,7 +12,9 @@
 #include <linux/rhashtable.h>
 
 struct user_namespace;
-
+#ifdef CONFIG_HCC_IPC
+struct hccipc_ops;
+#endif
 struct ipc_ids {
 	int in_use;
 	unsigned short seq;
@@ -23,7 +25,11 @@ struct ipc_ids {
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	int next_id;
 #endif
+
 	struct rhashtable key_ht;
+#ifdef CONFIG_HCC_IPC
+	struct hccipc_ops *hccops;
+#endif
 };
 
 struct ipc_namespace {
