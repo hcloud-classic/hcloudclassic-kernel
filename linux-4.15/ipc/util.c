@@ -65,6 +65,9 @@
 
 #include "util.h"
 
+#ifdef CONFIG_HCC_IPC
+#include "sem_handler.h"
+#endif
 struct ipc_proc_iface {
 	const char *path;
 	const char *header;
@@ -123,6 +126,9 @@ int ipc_init_ids(struct ipc_ids *ids)
 	idr_init(&ids->ipcs_idr);
 	ids->tables_initialized = true;
 	ids->max_id = -1;
+#ifdef CONFIG_HCC_IPC
+	ids->hccops = NULL;
+#endif
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	ids->next_id = -1;
 #endif
@@ -175,7 +181,14 @@ void __init ipc_init_proc_interface(const char *path, const char *header,
 static struct kern_ipc_perm *ipc_findkey(struct ipc_ids *ids, key_t key)
 {
 	struct kern_ipc_perm *ipcp = NULL;
-
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(ids)) {
+		ipc = ids->hccops->ipc_findkey(ids, key);
+		if (IS_ERR(ipc))
+			ipc = NULL;
+		return ipc;
+	}
+#endif
 	if (likely(ids->tables_initialized))
 		ipcp = rhashtable_lookup_fast(&ids->key_ht, &key,
 					      ipc_kht_params);
