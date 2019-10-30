@@ -192,3 +192,66 @@ found:
 
 	put_ipc_ns(ns);
 }
+static inline struct semundo_list_object * __create_semundo_proc_list(
+	struct task_struct *task)
+{
+	unique_id_t undo_list_id;
+	struct semundo_list_object *undo_list;
+	struct ipc_namespace *ns;
+	struct semhccops *semops;
+
+	ns = task_nsproxy(task)->ipc_ns;
+	if (!sem_ids(ns).hccops)
+		return ERR_PTR(-EINVAL);
+
+	semops = container_of(sem_ids(ns).hccops, struct semhccops, hccops);
+
+	/* get a random id */
+	undo_list_id = get_unique_id(&semops->undo_list_unique_id_root);
+
+
+	BUG_ON(undo_list);
+
+	undo_list = kzalloc(sizeof(struct semundo_list_object), GFP_KERNEL);
+	if (!undo_list) {
+		undo_list = ERR_PTR(-ENOMEM);
+		goto err_alloc;
+	}
+
+	undo_list->id = undo_list_id;
+	atomic_inc(&undo_list->refcnt);
+
+
+	task->sysvsem.undo_list_id = undo_list_id;
+exit:
+	return undo_list;
+
+err_alloc:
+	goto exit;
+}
+
+int create_semundo_proc_list(struct task_struct *task)
+{
+	int r = 0;
+	struct semundo_list_object *undo_list;
+
+	BUG_ON(task->sysvsem.undo_list_id != UNIQUE_ID_NONE);
+
+	undo_list_set = task_undolist_set(task);
+	if (IS_ERR(undo_list_set)) {
+		undo_list = ERR_PTR(PTR_ERR(undo_list_set));
+		goto err;
+	}
+
+	undo_list = __create_semundo_proc_list(task);
+
+	if (IS_ERR(undo_list)) {
+		r = PTR_ERR(undo_list);
+		goto err;
+	}
+
+	BUG_ON(atomic_read(&undo_list->refcnt) != 1);
+
+err:
+	return r;
+}
