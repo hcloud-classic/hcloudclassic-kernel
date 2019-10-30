@@ -12,6 +12,8 @@
 #include "sem_handler.h"
 #include "util.h"
 #include "semarray_io_linker.h"
+// for hcc namespace
+#include <hcc/namespace.h>
 #endif
 
 struct semhccops {
@@ -21,7 +23,15 @@ struct semhccops {
 	unique_id_root_t undo_list_unique_id_root;
 };
 
+// remote sem wake up info and msg
+struct ipcsem_wakeup_msg {
+	kerrighed_node_t requester;
+	int sem_id;
+	pid_t pid;
+	int error;
+};
 
+static struct hcc_namespace *hcc_ns;
 static struct kern_ipc_perm *hcc_ipc_sem_lock(struct ipc_ids *ids, int id)
 {
 	semarray_object_t *sem_object;
@@ -129,4 +139,56 @@ static struct kern_ipc_perm *kcb_ipc_sem_findkey(struct ipc_ids *ids, key_t key)
 		return hcc_ipc_sem_lock(ids, id);
 
 	return NULL;
+}
+
+
+void handle_ipcsem_wakeup_process(struct rpc_desc *desc, void *_msg,
+				  size_t size)
+{
+	struct ipcsem_wakeup_msg *msg = _msg;
+	struct sem_array *sma;
+	struct sem_queue *q, *tq;
+	struct ipc_namespace *ns;
+
+
+	struct hcc_namespace *ns;
+
+	rcu_read_lock();
+	ns = rcu_dereference(hcc_ns);
+	if (ns)
+		if (!atomic_add_unless(&ns->count, 1, 0))
+			ns = NULL;
+	rcu_read_unlock();
+	BUG_ON(!ns);
+
+// sma local lock implemention
+// sma= xxx
+	BUG_ON(IS_ERR(sma));
+
+	list_for_each_entry_safe(q, tq, &sma->sem_pending, list) {
+		/* compare to q->sleeper's pid instead of q->pid
+		   because q->pid == q->sleeper's tgid */
+		if (task_pid_knr(q->sleeper) == msg->pid) {
+			list_del(&q->list);
+			goto found;
+		}
+	}
+
+	BUG();
+found:
+	q->status = 1; /* IN_WAKEUP; */
+
+	BUG_ON(!q->sleeper);
+	BUG_ON(q->pid != task_tgid_nr_ns(q->sleeper,
+					 task_active_pid_ns(q->sleeper)));
+
+	wake_up_process(q->sleeper);
+	smp_wmb();
+	q->status = msg->error;
+
+	local_sem_unlock(sma);
+
+	rpc_pack_type(desc, msg->error);
+
+	put_ipc_ns(ns);
 }
