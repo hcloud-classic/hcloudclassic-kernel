@@ -109,7 +109,6 @@ int hcc_ipc_sem_newary(struct ipc_namespace *ns, struct sem_array *sma)
 	INIT_LIST_HEAD(&sem_object->imported_sem.sem_pending);
 	INIT_LIST_HEAD(&sem_object->imported_sem.remote_sem_pending);
 
-	_kddm_set_object(sem_ids(ns).hccops->data_kddm_set, index, sem_object);
 
 	if (sma->sem_perm.key != IPC_PRIVATE)
 	{
@@ -253,5 +252,66 @@ int create_semundo_proc_list(struct task_struct *task)
 	BUG_ON(atomic_read(&undo_list->refcnt) != 1);
 
 err:
+	return r;
+}
+
+static int __share_new_semundo(struct task_struct *task)
+{
+	int r = 0;
+	struct semundo_list_object *undo_list;
+
+	BUG_ON(current);
+	BUG_ON(current->sysvsem.undo_list_id != UNIQUE_ID_NONE);
+
+	undo_list_set = task_undolist_set(task);
+	if (IS_ERR(undo_list_set)) {
+		r = PTR_ERR(undo_list_set);
+		goto exit;
+	}
+
+	undo_list = __create_semundo_proc_list(current);
+
+	if (IS_ERR(undo_list)) {
+		r = PTR_ERR(undo_list);
+		goto exit;
+	}
+
+	task->sysvsem.undo_list_id = current->sysvsem.undo_list_id;
+	atomic_inc(&undo_list->refcnt);
+
+	BUG_ON(atomic_read(&undo_list->refcnt) != 2);
+
+exit:
+	return r;
+}
+
+int share_existing_semundo_proc_list(struct task_struct *task,
+				     unique_id_t undo_list_id)
+{
+	int r = 0;
+	struct semundo_list_object *undo_list;
+
+	undo_list_set = task_undolist_set(task);
+	if (IS_ERR(undo_list_set)) {
+		r = PTR_ERR(undo_list_set);
+		goto exit;
+	}
+
+	BUG_ON(undo_list_id == UNIQUE_ID_NONE);
+
+// Undo list get function implementation
+	// undo_list = 
+
+	if (!undo_list) {
+		r = -ENOMEM;
+		goto exit_put;
+	}
+
+	task->sysvsem.undo_list_id = undo_list_id;
+	atomic_inc(&undo_list->refcnt);
+
+exit_put:
+	return 0;
+exit:
 	return r;
 }
