@@ -25,7 +25,6 @@ struct semhccops {
 
 // remote sem wake up info and msg
 struct ipcsem_wakeup_msg {
-	kerrighed_node_t requester;
 	int sem_id;
 	pid_t pid;
 	int error;
@@ -370,4 +369,105 @@ int hcc_ipc_sem_copy_semundo(unsigned long clone_flags,
 
 exit:
 	return r;
+}
+
+
+int add_semundo_to_proc_list(struct semundo_list_object *undo_list, int semid)
+{
+	struct semundo_id *undo_id;
+	int r = 0;
+	BUG_ON(!undo_list);
+
+#ifdef CONFIG_HCC_DEBUG
+	/* WARNING: this is a paranoiac checking */
+	for (undo_id = undo_list->list; undo_id; undo_id = undo_id->next) {
+		if (undo_id->semid == semid) {
+			printk("%p %p %d %d\n", undo_id,
+			       undo_list, semid,
+			       atomic_read(&undo_list->semcnt));
+			BUG();
+		}
+	}
+#endif
+
+	undo_id = kmalloc(sizeof(struct semundo_id), GFP_KERNEL);
+	if (!undo_id) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	atomic_inc(&undo_list->semcnt);
+	undo_id->semid = semid;
+	undo_id->next = undo_list->list;
+	undo_list->list = undo_id;
+exit:
+	return r;
+}
+
+
+struct sem_undo * hcc_ipc_sem_find_undo(struct sem_array* sma)
+{
+	struct sem_undo * undo;
+	int r = 0;
+	struct semundo_list_object *undo_list = NULL;
+	unique_id_t undo_list_id;
+
+
+	if (current->sysvsem.undo_list_id == UNIQUE_ID_NONE) {
+
+		/* create a undolist if not yet allocated */
+
+		if (IS_ERR(undo_list)) {
+			undo = ERR_PTR(PTR_ERR(undo_list));
+			goto exit;
+		}
+
+		BUG_ON(atomic_read(&undo_list->semcnt) != 0);
+
+	} else {
+		/* check in the undo list of the sma */
+		list_for_each_entry(undo, &sma->list_id, list_id) {
+			if (undo->proc_list_id ==
+			    current->sysvsem.undo_list_id) {
+				goto exit;
+			}
+		}
+	}
+
+	undo_list_id = current->sysvsem.undo_list_id;
+
+	/* allocate one */
+	undo = kzalloc(sizeof(struct sem_undo) +
+		       sizeof(short)*(sma->sem_nsems), GFP_KERNEL);
+	if (!undo) {
+		undo = ERR_PTR(-ENOMEM);
+		goto exit;
+	}
+
+	INIT_LIST_HEAD(&undo->list_proc);
+	undo->proc_list_id = undo_list_id;
+	undo->semid = sma->sem_perm.id;
+	undo->semadj = (short *) &undo[1];
+
+	list_add(&undo->list_id, &sma->list_id);
+
+	/* reference it in the undo_list per process*/
+	BUG_ON(undo_list_id == UNIQUE_ID_NONE);
+
+	if (!undo_list) {
+		r = -ENOMEM;
+		goto exit_free_undo;
+	}
+
+	r = add_semundo_to_proc_list(undo_list, undo->semid);
+
+exit_free_undo:
+	if (r) {
+		list_del(&undo->list_id);
+		kfree(undo);
+		undo = ERR_PTR(r);
+	}
+
+exit:
+	return undo;
 }
