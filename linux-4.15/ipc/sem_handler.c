@@ -14,6 +14,7 @@
 #include "semarray_io_linker.h"
 // for hcc namespace
 #include <hcc/namespace.h>
+#include "hccsem.h"
 #endif
 
 struct semhccops {
@@ -470,4 +471,31 @@ exit_free_undo:
 
 exit:
 	return undo;
+}
+
+static inline void __remove_semundo_from_sem_list(struct ipc_namespace *ns,
+						  int semid,
+						  unique_id_t undo_list_id)
+{
+	struct sem_array *sma;
+	struct sem_undo *un, *tu;
+
+	sma = sem_obtain_object(ns, semid);
+	sem_lock(sma,NULL,-1);
+	if (IS_ERR(sma))
+		return;
+
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		if (un->proc_list_id == undo_list_id) {
+			list_del(&un->list_id);
+			__exit_sem_found(sma, un);
+
+			kfree(un);
+			goto exit_unlock;
+		}
+	}
+	BUG();
+
+exit_unlock:
+	sem_unlock(sma);
 }
