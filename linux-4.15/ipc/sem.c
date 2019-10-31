@@ -2301,6 +2301,25 @@ void exit_sem(struct task_struct *tsk)
 	kfree(ulp);
 }
 
+void __exit_sem_found(struct sem_array *sma, struct sem_undo *un)
+{
+	int i;
+
+	for (i = 0; i < sma->sem_nsems; i++) {
+		struct sem * semaphore = &sma->sem_base[i];
+		if (un->semadj[i]) {
+			semaphore->semval += un->semadj[i];
+			if (semaphore->semval < 0)
+				semaphore->semval = 0;
+			if (semaphore->semval > SEMVMX)
+				semaphore->semval = SEMVMX;
+			semaphore->sempid = task_tgid_vnr(current);
+		}
+	}
+	sma->sem_otime = get_seconds();
+	update_queue(sma);
+}
+
 #ifdef CONFIG_PROC_FS
 static int sysvipc_sem_proc_show(struct seq_file *s, void *it)
 {

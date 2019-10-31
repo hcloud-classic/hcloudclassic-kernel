@@ -14,6 +14,7 @@
 #include "semarray_io_linker.h"
 // for hcc namespace
 #include <hcc/namespace.h>
+#include "hccsem.h"
 #endif
 
 struct semhccops {
@@ -25,7 +26,6 @@ struct semhccops {
 
 // remote sem wake up info and msg
 struct ipcsem_wakeup_msg {
-	kerrighed_node_t requester;
 	int sem_id;
 	pid_t pid;
 	int error;
@@ -314,4 +314,188 @@ exit_put:
 	return 0;
 exit:
 	return r;
+}
+
+
+int share_existing_semundo_proc_list(struct task_struct *task,
+				     unique_id_t undo_list_id)
+{
+	int r = 0;
+	struct semundo_list_object *undo_list;
+
+	undo_list = task_undolist_set(task);
+
+	BUG_ON(undo_list_id == UNIQUE_ID_NONE);
+
+	if (!undo_list) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	task->sysvsem.undo_list_id = undo_list_id;
+	atomic_inc(&undo_list->refcnt);
+
+
+exit:
+	return r;
+}
+
+int hcc_ipc_sem_copy_semundo(unsigned long clone_flags,
+			     struct task_struct *tsk)
+{
+	int r = 0;
+
+	BUG_ON(!tsk);
+
+	if (clone_flags & CLONE_SYSVSEM) {
+		if (current->sysvsem.undo_list) {
+			printk("ERROR: Do not support fork of process (%d - %s)"
+			       "that had used semaphore before Hcloud-Classic was "
+			       "started\n", tsk->tgid, tsk->comm);
+			r = -EPERM;
+			goto exit;
+		}
+
+		if (current->sysvsem.undo_list_id != UNIQUE_ID_NONE)
+			r = share_existing_semundo_proc_list(
+				tsk, current->sysvsem.undo_list_id);
+		else
+			r = __share_new_semundo(tsk);
+
+	} else
+		/* undolist will be only created when needed */
+		tsk->sysvsem.undo_list_id = UNIQUE_ID_NONE;
+
+	tsk->sysvsem.undo_list = NULL;
+
+exit:
+	return r;
+}
+
+
+int add_semundo_to_proc_list(struct semundo_list_object *undo_list, int semid)
+{
+	struct semundo_id *undo_id;
+	int r = 0;
+	BUG_ON(!undo_list);
+
+#ifdef CONFIG_HCC_DEBUG
+	/* WARNING: this is a paranoiac checking */
+	for (undo_id = undo_list->list; undo_id; undo_id = undo_id->next) {
+		if (undo_id->semid == semid) {
+			printk("%p %p %d %d\n", undo_id,
+			       undo_list, semid,
+			       atomic_read(&undo_list->semcnt));
+			BUG();
+		}
+	}
+#endif
+
+	undo_id = kmalloc(sizeof(struct semundo_id), GFP_KERNEL);
+	if (!undo_id) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	atomic_inc(&undo_list->semcnt);
+	undo_id->semid = semid;
+	undo_id->next = undo_list->list;
+	undo_list->list = undo_id;
+exit:
+	return r;
+}
+
+
+struct sem_undo * hcc_ipc_sem_find_undo(struct sem_array* sma)
+{
+	struct sem_undo * undo;
+	int r = 0;
+	struct semundo_list_object *undo_list = NULL;
+	unique_id_t undo_list_id;
+
+
+	if (current->sysvsem.undo_list_id == UNIQUE_ID_NONE) {
+
+		/* create a undolist if not yet allocated */
+
+		if (IS_ERR(undo_list)) {
+			undo = ERR_PTR(PTR_ERR(undo_list));
+			goto exit;
+		}
+
+		BUG_ON(atomic_read(&undo_list->semcnt) != 0);
+
+	} else {
+		/* check in the undo list of the sma */
+		list_for_each_entry(undo, &sma->list_id, list_id) {
+			if (undo->proc_list_id ==
+			    current->sysvsem.undo_list_id) {
+				goto exit;
+			}
+		}
+	}
+
+	undo_list_id = current->sysvsem.undo_list_id;
+
+	/* allocate one */
+	undo = kzalloc(sizeof(struct sem_undo) +
+		       sizeof(short)*(sma->sem_nsems), GFP_KERNEL);
+	if (!undo) {
+		undo = ERR_PTR(-ENOMEM);
+		goto exit;
+	}
+
+	INIT_LIST_HEAD(&undo->list_proc);
+	undo->proc_list_id = undo_list_id;
+	undo->semid = sma->sem_perm.id;
+	undo->semadj = (short *) &undo[1];
+
+	list_add(&undo->list_id, &sma->list_id);
+
+	/* reference it in the undo_list per process*/
+	BUG_ON(undo_list_id == UNIQUE_ID_NONE);
+
+	if (!undo_list) {
+		r = -ENOMEM;
+		goto exit_free_undo;
+	}
+
+	r = add_semundo_to_proc_list(undo_list, undo->semid);
+
+exit_free_undo:
+	if (r) {
+		list_del(&undo->list_id);
+		kfree(undo);
+		undo = ERR_PTR(r);
+	}
+
+exit:
+	return undo;
+}
+
+static inline void __remove_semundo_from_sem_list(struct ipc_namespace *ns,
+						  int semid,
+						  unique_id_t undo_list_id)
+{
+	struct sem_array *sma;
+	struct sem_undo *un, *tu;
+
+	sma = sem_obtain_object(ns, semid);
+	sem_lock(sma,NULL,-1);
+	if (IS_ERR(sma))
+		return;
+
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		if (un->proc_list_id == undo_list_id) {
+			list_del(&un->list_id);
+			__exit_sem_found(sma, un);
+
+			kfree(un);
+			goto exit_unlock;
+		}
+	}
+	BUG();
+
+exit_unlock:
+	sem_unlock(sma);
 }
