@@ -315,3 +315,59 @@ exit_put:
 exit:
 	return r;
 }
+
+
+int share_existing_semundo_proc_list(struct task_struct *task,
+				     unique_id_t undo_list_id)
+{
+	int r = 0;
+	struct semundo_list_object *undo_list;
+
+	undo_list = task_undolist_set(task);
+
+	BUG_ON(undo_list_id == UNIQUE_ID_NONE);
+
+	if (!undo_list) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	task->sysvsem.undo_list_id = undo_list_id;
+	atomic_inc(&undo_list->refcnt);
+
+
+exit:
+	return r;
+}
+
+int hcc_ipc_sem_copy_semundo(unsigned long clone_flags,
+			     struct task_struct *tsk)
+{
+	int r = 0;
+
+	BUG_ON(!tsk);
+
+	if (clone_flags & CLONE_SYSVSEM) {
+		if (current->sysvsem.undo_list) {
+			printk("ERROR: Do not support fork of process (%d - %s)"
+			       "that had used semaphore before Hcloud-Classic was "
+			       "started\n", tsk->tgid, tsk->comm);
+			r = -EPERM;
+			goto exit;
+		}
+
+		if (current->sysvsem.undo_list_id != UNIQUE_ID_NONE)
+			r = share_existing_semundo_proc_list(
+				tsk, current->sysvsem.undo_list_id);
+		else
+			r = __share_new_semundo(tsk);
+
+	} else
+		/* undolist will be only created when needed */
+		tsk->sysvsem.undo_list_id = UNIQUE_ID_NONE;
+
+	tsk->sysvsem.undo_list = NULL;
+
+exit:
+	return r;
+}
