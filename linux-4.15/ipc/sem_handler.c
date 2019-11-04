@@ -514,3 +514,52 @@ void hcc_ipc_sem_wakeup_process(struct sem_queue *q, int error)
 
 	/*RPC Type check, Packing, Unpacking implementation */
 }
+
+
+void hcc_ipc_sem_exit_sem(struct ipc_namespace *ns,
+			  struct task_struct * task)
+{
+	unique_id_t undo_list_id;
+	struct semundo_list_object * undo_list;
+	struct semundo_id * undo_id, *next;
+
+	if (task->sysvsem.undo_list_id == UNIQUE_ID_NONE)
+		return;
+
+
+	undo_list_id = task->sysvsem.undo_list_id;
+
+	if (!atomic_dec_and_test(&undo_list->refcnt))
+		return;
+	for (undo_id = undo_list->list; undo_id; undo_id = next) {
+		next = undo_id->next;
+		__remove_semundo_from_sem_list(ns, undo_id->semid,
+					       undo_list_id);
+		kfree(undo_id);
+	}
+	undo_list->list = NULL;
+	atomic_set(&undo_list->semcnt, 0);
+
+
+	return;
+
+
+}
+
+/*****************************************************************************/
+/*                                                                           */
+/*                              INITIALIZATION                               */
+/*                                                                           */
+/*****************************************************************************/
+void sem_handler_init (void)
+{
+	semarray_object_cachep = kmem_cache_create("semarray_object",
+						   sizeof(semarray_object_t),
+						   0, SLAB_PANIC, NULL);
+
+	register_io_linker(SEMARRAY_LINKER, &semarray_linker);
+	register_io_linker(SEMKEY_LINKER, &semkey_linker);
+	register_io_linker(SEMUNDO_LINKER, &semundo_linker);
+
+	rpc_register_void(IPC_SEM_WAKEUP, handle_ipcsem_wakeup_process, 0);
+}
