@@ -476,7 +476,10 @@ static struct sem_array *sem_alloc(size_t nsems)
  *
  * Called with sem_ids.rwsem held (as a writer)
  */
-static int newary(struct ipc_namespace *ns, struct ipc_params *params)
+#ifdef CONFIG_HCC_IPC
+static
+#endif
+int newary(struct ipc_namespace *ns, struct ipc_params *params)
 {
 	int retval;
 	struct sem_array *sma;
@@ -517,9 +520,28 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 	INIT_LIST_HEAD(&sma->list_id);
 	sma->sem_nsems = nsems;
 	sma->sem_ctime = ktime_get_real_seconds();
+#ifdef CONFIG_HCC_IPC
+	INIT_LIST_HEAD(&sma->remote_pending);
+	if (is_hcc_ipc(&sem_ids(ns)))
+	{
+		retval = hcc_ipc_sem_newary(ns, sma);
+		if (retval)
+		{
+			security_sem_free(sma);
+			ipc_rcu_putref(sma, sem_rcu_free);
+			return retval;
+		}
+	}
+	else
 
+		sma->sem_perm.hccops = NULL;
+#endif
 	/* ipc_addid() locks sma upon success. */
+#ifdef CONFIG_HCC_IPC
+	retval = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni, params->requested_id);
+#else
 	retval = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
+#endif
 	if (retval < 0) {
 		call_rcu(&sma->sem_perm.rcu, sem_rcu_free);
 		return retval;
