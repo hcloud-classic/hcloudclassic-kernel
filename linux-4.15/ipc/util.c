@@ -255,7 +255,12 @@ static inline int ipc_buildid(int id, struct ipc_ids *ids,
  *
  * Called with writer ipc_ids.rwsem held.
  */
+#ifdef CONFIG_HCC_IPC
+int ipc_addid(struct ipc_ids* ids, struct kern_ipc_perm* new, int size,
+	      int requested_id)
+#else
 int ipc_addid(struct ipc_ids *ids, struct kern_ipc_perm *new, int limit)
+#endif
 {
 	kuid_t euid;
 	kgid_t egid;
@@ -270,6 +275,10 @@ int ipc_addid(struct ipc_ids *ids, struct kern_ipc_perm *new, int limit)
 	idr_preload(GFP_KERNEL);
 
 	refcount_set(&new->refcount, 1);
+#ifdef CONFIG_HCC_IPC
+	if (requested_id != -1)
+		return ipc_reserveid(ids, new, requested_id);
+#endif
 	spin_lock_init(&new->lock);
 	new->deleted = false;
 	rcu_read_lock();
@@ -304,6 +313,73 @@ int ipc_addid(struct ipc_ids *ids, struct kern_ipc_perm *new, int limit)
 
 	return id;
 }
+#ifdef CONFIG_HCC_IPC
+static int ipc_reserveid(struct ipc_ids *ids, struct kern_ipc_perm *new,
+			 int requested_id)
+{
+	uid_t euid;
+	gid_t egid;
+	int lid, id, err;
+	unsigned long idr_index;
+	idr_preload(GFP_KERNEL);
+	refcount_set(&new->refcount, 1);
+
+	mutex_init(&new->mutex);
+	new->deleted = 0;
+	rcu_read_lock();
+
+	mutex_lock(&new->mutex);
+
+	lid = ipcid_to_idx(requested_id);
+
+
+/** Error Check */
+	// err = 
+	// if (err)
+	// 	goto out;
+
+
+	err = idr_alloc_ext(&ids->ipcs_idr, new,&idr_index, lid,0x7FFFFFFF, GFP_KERNEL); 
+	if (err)
+		goto out_free_hcc_id;
+
+	if (lid != id) {
+		err = -EINVAL;
+		goto out_free_idr_id;
+	}
+
+	idr_preload_end();
+
+	ids->in_use++;
+
+	current_euid_egid(&euid, &egid);
+	new->cuid = new->uid = euid;
+	new->gid = new->cgid = egid;
+
+	new->seq = (requested_id - lid) / SEQ_MULTIPLIER;
+
+	if (ids->seq <= new->seq)
+		ids->seq = new->seq+1;
+
+	if (ids->seq > ids->seq_max)
+		ids->seq = 0;
+
+	new->id = requested_id;
+
+	return requested_id;
+
+out_free_idr_id:
+	idr_remove(&ids->ipcs_idr, id);
+out_free_hcc_id:
+	hcc_ipc_rmid(ids, lid);
+out:
+	mutex_unlock(&new->mutex);
+	rcu_read_unlock();
+
+	return err;
+}
+#endif
+
 
 /**
  * ipcget_new -	create a new ipc object
@@ -594,7 +670,11 @@ struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
  *
  * The ipc object is locked on successful exit.
  */
+#ifdef CONFIG_HCC_IPC
+struct kern_ipc_perm *local_ipc_lock(struct ipc_ids *ids, int id)
+#else
 struct kern_ipc_perm *ipc_lock(struct ipc_ids *ids, int id)
+#endif
 {
 	struct kern_ipc_perm *out;
 
@@ -602,9 +682,11 @@ struct kern_ipc_perm *ipc_lock(struct ipc_ids *ids, int id)
 	out = ipc_obtain_object_idr(ids, id);
 	if (IS_ERR(out))
 		goto err;
-
+#ifdef CONFIG_HCC_IPC
+	mutex_lock(&out->mutex);
+#else
 	spin_lock(&out->lock);
-
+#endif
 	/*
 	 * ipc_rmid() may have already freed the ID while ipc_lock()
 	 * was spinning: here verify that the structure is still valid.
@@ -613,8 +695,11 @@ struct kern_ipc_perm *ipc_lock(struct ipc_ids *ids, int id)
 	 */
 	if (ipc_valid_object(out))
 		return out;
-
+#ifdef CONFIG_HCC_IPC
+		mutex_unlock(&out->mutex);
+#else
 	spin_unlock(&out->lock);
+#endif
 	out = ERR_PTR(-EIDRM);
 err:
 	rcu_read_unlock();
