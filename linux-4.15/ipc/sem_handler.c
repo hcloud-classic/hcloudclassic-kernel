@@ -12,6 +12,7 @@
 #include "sem_handler.h"
 #include "util.h"
 #include "semarray_io_linker.h"
+
 // for hcc namespace
 #include <hcc/namespace.h>
 #include "hccsem.h"
@@ -26,6 +27,7 @@ struct semhccops {
 
 // remote sem wake up info and msg
 struct ipcsem_wakeup_msg {
+	hcc_node_t requster;
 	int sem_id;
 	pid_t pid;
 	int error;
@@ -498,4 +500,17 @@ static inline void __remove_semundo_from_sem_list(struct ipc_namespace *ns,
 
 exit_unlock:
 	sem_unlock(sma);
+}
+
+void hcc_ipc_sem_wakeup_process(struct sem_queue *q, int error)
+{
+	struct ipcsem_wakeup_msg msg;
+	struct rpc_desc *desc;
+
+	msg.requester = hcc_node_id;
+	msg.sem_id = q->semid;
+	msg.pid = remote_sleeper_pid(q); /* q->pid contains the tgid */
+	msg.error = error;
+
+	/*RPC Type check, Packing, Unpacking implementation */
 }

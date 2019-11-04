@@ -13,6 +13,10 @@
 #include <net/hccgrpc/rpc.h>
 #endif
 
+/* Hcc Cluster Node id */
+hcc_node_t hcc_node_id = -1;
+EXPORT_SYMBOL(hcc_node_id);
+
 struct workqueue_struct *hcc_wq;
 struct workqueue_struct *hcc_nb_wq;
 
