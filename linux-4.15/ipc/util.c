@@ -242,6 +242,115 @@ static inline int ipc_buildid(int id, struct ipc_ids *ids,
 
 #endif /* CONFIG_CHECKPOINT_RESTORE */
 
+#ifdef CONFIG_HCC_IPC
+bool ipc_used(struct ipc_namespace *ns)
+{
+	bool used = false;
+	int i;
+	struct ipc_ids *ids;
+
+	for (i = 0; i < ARRAY_SIZE(ns->ids); i++) {
+		ids = &ns->ids[i];
+
+		down_read(&ids->rw_mutex);
+		used |= ipc_get_maxid(ids) != -1;
+		up_read(&ids->rw_mutex);
+	}
+
+	return used;
+}
+static int hcc_idr_get_new(struct ipc_ids *ids, struct kern_ipc_perm *new, int *id)
+{
+	int err;
+	// Codex for idr_alloc_ext  need index
+	unsigned long idr_index;
+	if (is_hcc_ipc(ids)) {
+		int ipcid, lid;
+
+		ipcid = hcc_ipc_get_new_id(ids);
+		if (ipcid == -1) {
+			err = -ENOMEM;
+			goto error;
+		}
+
+		lid = ipcid_to_idx(ipcid);
+		err = idr_alloc_ext(&ids->ipcs_idr, new,&idr_index, lid,0x7FFFFFFF, GFP_KERNEL); 
+		if (!err && lid != *id) {
+			idr_remove(&ids->ipcs_idr, *id);
+			err = -EINVAL;
+		}
+	} else
+		err = ipc_idr_alloc(ids,new);
+
+error:
+	return err;
+}
+
+static int ipc_reserveid(struct ipc_ids *ids, struct kern_ipc_perm *new,
+			 int requested_id)
+{
+	uid_t euid;
+	gid_t egid;
+	int lid, id, err;
+	unsigned long idr_index;
+	idr_preload(GFP_KERNEL);
+	refcount_set(&new->refcount, 1);
+
+	mutex_init(&new->mutex);
+	new->deleted = 0;
+	rcu_read_lock();
+
+	mutex_lock(&new->mutex);
+
+	lid = ipcid_to_idx(requested_id);
+
+	err = hcc_ipc_get_this_id(ids, lid);
+	if (err)
+		goto out;
+
+
+	err = idr_alloc_ext(&ids->ipcs_idr, new,&idr_index, lid,0x7FFFFFFF, GFP_KERNEL); 
+	if (err)
+		goto out_free_hcc_id;
+
+	if (lid != id) {
+		err = -EINVAL;
+		goto out_free_idr_id;
+	}
+
+	idr_preload_end();
+
+	ids->in_use++;
+
+	current_euid_egid(&euid, &egid);
+	new->cuid = new->uid = euid;
+	new->gid = new->cgid = egid;
+
+	new->seq = (requested_id - lid) / SEQ_MULTIPLIER;
+
+	if (ids->seq <= new->seq)
+		ids->seq = new->seq+1;
+
+	if (ids->seq > ids->seq_max)
+		ids->seq = 0;
+
+	new->id = requested_id;
+
+	return requested_id;
+
+out_free_idr_id:
+	idr_remove(&ids->ipcs_idr, id);
+out_free_hcc_id:
+	hcc_ipc_rmid(ids, lid);
+out:
+	mutex_unlock(&new->mutex);
+	rcu_read_unlock();
+
+	return err;
+}
+#endif
+
+
 /**
  * ipc_addid - add an ipc identifier
  * @ids: ipc identifier set
@@ -986,3 +1095,58 @@ static const struct file_operations sysvipc_proc_fops = {
 	.release = sysvipc_proc_release,
 };
 #endif /* CONFIG_PROC_FS */
+
+
+#ifdef CONFIG_HCC_IPC
+
+int is_hcc_ipc(struct ipc_ids *ids)
+{
+	if (ids->hccops)
+		return 1;
+
+	return 0;
+}
+
+int hcc_ipc_get_new_id(struct ipc_ids* ids)
+{
+	ipcmap_object_t *ipc_map, *max_id;
+	int i = 1, id = -1, offset;
+
+	while (id == -1) {
+		if (ipc_map->alloc_map != ULONG_MAX) {
+			offset = find_first_zero_bit(&ipc_map->alloc_map,
+						     BITS_PER_LONG);
+
+			if (offset < BITS_PER_LONG) {
+
+				id = (i-1) * BITS_PER_LONG + offset;
+				set_bit(offset, &ipc_map->alloc_map);
+				if (id >= max_id->alloc_map)
+					max_id->alloc_map = id + 1;
+			}
+		}
+
+		i++;
+	}
+	return id;
+}
+
+int hcc_ipc_get_this_id(struct ipc_ids *ids, int id)
+{
+	ipcmap_object_t *ipc_map, *max_id;
+	int i, offset, ret = 0;
+
+	offset = id % BITS_PER_LONG;
+	i = (id - offset)/BITS_PER_LONG +1;
+
+	if (test_and_set_bit(offset, &ipc_map->alloc_map)) {
+		ret = -EBUSY;
+		goto out_id_unavailable;
+	}
+
+	if (id >= max_id->alloc_map)
+		max_id->alloc_map = id + 1;
+
+	return ret;
+}
+#endif
