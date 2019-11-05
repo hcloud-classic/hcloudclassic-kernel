@@ -242,6 +242,53 @@ static inline int ipc_buildid(int id, struct ipc_ids *ids,
 
 #endif /* CONFIG_CHECKPOINT_RESTORE */
 
+#ifdef CONFIG_HCC_IPC
+bool ipc_used(struct ipc_namespace *ns)
+{
+	bool used = false;
+	int i;
+	struct ipc_ids *ids;
+
+	for (i = 0; i < ARRAY_SIZE(ns->ids); i++) {
+		ids = &ns->ids[i];
+
+		down_read(&ids->rw_mutex);
+		used |= ipc_get_maxid(ids) != -1;
+		up_read(&ids->rw_mutex);
+	}
+
+	return used;
+}
+static int hcc_idr_get_new(struct ipc_ids *ids, struct kern_ipc_perm *new, int *id)
+{
+	int err;
+	// Codex for idr_alloc_ext  need index
+	unsigned long idr_index;
+	if (is_hcc_ipc(ids)) {
+		int ipcid, lid;
+
+		ipcid = hcc_ipc_get_new_id(ids);
+		if (ipcid == -1) {
+			err = -ENOMEM;
+			goto error;
+		}
+
+		lid = ipcid_to_idx(ipcid);
+		err = idr_alloc_ext(&ids->ipcs_idr, new,&idr_index, lid,0x7FFFFFFF, GFP_KERNEL); 
+		if (!err && lid != *id) {
+			idr_remove(&ids->ipcs_idr, *id);
+			err = -EINVAL;
+		}
+	} else
+		err = ipc_idr_alloc(ids,new);
+
+error:
+	return err;
+}
+
+#endif
+
+
 /**
  * ipc_addid - add an ipc identifier
  * @ids: ipc identifier set
