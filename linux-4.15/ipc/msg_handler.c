@@ -22,6 +22,57 @@ struct master_set *hccipc_ops_master_set(struct hccipc_ops *ipcops)
 
 	return msgops->master_set;
 }
+static struct kern_ipc_perm *kcb_ipc_msg_lock(struct ipc_ids *ids, int id)
+{
+	msq_object_t *msq_object;
+	struct msg_queue *msq;
+	int index;
+
+	rcu_read_lock();
+
+	index = ipcid_to_idx(id);
+
+	msq_object = _grab_object_no_ft(ids->hccops->data_set, index);
+
+	if (!msq_object)
+		goto error;
+
+	msq = msq_object->local_msq;
+
+	BUG_ON(!msq);
+
+	mutex_lock(&msq->q_perm.mutex);
+
+	if (msq->q_perm.deleted) {
+		mutex_unlock(&msq->q_perm.mutex);
+		goto error;
+	}
+
+	return &(msq->q_perm);
+
+error:
+	_put_object(ids->hccops->data_set, index);
+	rcu_read_unlock();
+
+	return ERR_PTR(-EINVAL);
+}
+
+static void kcb_ipc_msg_unlock(struct kern_ipc_perm *ipcp)
+{
+	int index, deleted = 0;
+
+	index = ipcid_to_idx(ipcp->id);
+
+	if (ipcp->deleted)
+		deleted = 1;
+
+	_put_object(ipcp->hccops->data_set, index);
+
+	if (!deleted)
+		mutex_unlock(&ipcp->mutex);
+
+	rcu_read_unlock();
+}
 
 
 #endif
