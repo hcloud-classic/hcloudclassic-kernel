@@ -13,6 +13,10 @@
 #include <net/hccgrpc/rpc.h>
 #endif
 
+#ifdef CONFIG_HCCGPROC
+#include <hcc/gproc.h>
+#endif
+
 /* Hcc Cluster Node id */
 hcc_node_t hcc_node_id = -1;
 EXPORT_SYMBOL(hcc_node_id);
@@ -41,6 +45,7 @@ err_rpc:
 int init_hcc_components(void){
 
     printk(KERN_INFO "HCC: init_hcc_components");
+    init_proc();
 
     return 0;
 }
