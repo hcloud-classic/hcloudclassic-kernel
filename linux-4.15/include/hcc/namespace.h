@@ -14,3 +14,11 @@ struct hcc_namespace {
 	struct task_struct *root_task;
 	struct rcu_head rcu;
 };
+
+
+struct hcc_namespace *find_get_hcc_ns(void);
+
+static inline void get_hcc_ns(struct hcc_namespace *ns)
+{
+	atomic_inc(&ns->count);
+}
