@@ -92,4 +92,86 @@ static struct kern_ipc_perm *kcb_ipc_msg_findkey(struct ipc_ids *ids, key_t key)
 	return NULL;
 }
 
+int hcc_ipc_msg_newque(struct ipc_namespace *ns, struct msg_queue *msq)
+{
+	struct_set *master_set;
+	msq_object_t *msq_object;
+	hcc_node_t *master_node;
+	long *key_index;
+	int index, err = 0;
+
+	BUG_ON(!msg_ids(ns).hccops);
+
+	index = ipcid_to_idx(msq->q_perm.id);
+
+	msq_object = _grab_object_manual_ft(
+		msg_ids(ns).hccops->data_set, index);
+
+	BUG_ON(msq_object);
+
+	msq_object = kmem_cache_alloc(msq_object_cachep, GFP_KERNEL);
+	if (!msq_object) {
+		err = -ENOMEM;
+		goto err_put;
+	}
+
+	msq_object->local_msq = msq;
+	msq_object->local_msq->is_master = 1;
+	msq_object->mobile_msq.q_perm.id = -1;
+
+	_set_object(msg_ids(ns).hccops->data_set, index, msq_object);
+
+	if (msq->q_perm.key != IPC_PRIVATE)
+	{
+		key_index = _grab_object(msg_ids(ns).hccops->key_set,
+					      msq->q_perm.key);
+		*key_index = index;
+		_put_object(msg_ids(ns).hccops->key_set,
+				 msq->q_perm.key);
+	}
+
+	master_set = hccipc_ops_master_set(msg_ids(ns).hccops);
+
+	master_node = _grab_object(master_set, index);
+	*master_node = hcc_node_id;
+
+	msq->q_perm.hccops = msg_ids(ns).hccops;
+
+	_put_object(master_set, index);
+
+err_put:
+	_put_object(msg_ids(ns).hccops->data_set, index);
+
+	return err;
+}
+
+
+
+void hcc_ipc_msg_freeque(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
+{
+	int index;
+	key_t key;
+	struct master_set *master_set;
+	struct msg_queue *msq = container_of(ipcp, struct msg_queue, q_perm);
+
+	index = ipcid_to_idx(msq->q_perm.id);
+	key = msq->q_perm.key;
+
+	if (key != IPC_PRIVATE) {
+		_grab_object_no_ft(ipcp->hccops->key_set, key);
+		_remove_frozen_object(ipcp->hccops->key_set, key);
+	}
+
+	master_set = hccipc_ops_master_set(ipcp->hccops);
+
+	_grab_object_no_ft(master_set, index);
+	_remove_frozen_object(master_set, index);
+
+	local_msg_unlock(msq);
+
+	_remove_frozen_object(ipcp->hccops->data_set, index);
+
+	hcc_ipc_rmid(&msg_ids(ns), index);
+}
+
 #endif
