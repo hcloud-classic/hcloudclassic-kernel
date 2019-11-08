@@ -147,6 +147,31 @@ err_put:
 
 
 
+void hcc_ipc_msg_freeque(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
+{
+	int index;
+	key_t key;
+	struct master_set *master_set;
+	struct msg_queue *msq = container_of(ipcp, struct msg_queue, q_perm);
 
+	index = ipcid_to_idx(msq->q_perm.id);
+	key = msq->q_perm.key;
+
+	if (key != IPC_PRIVATE) {
+		_grab_object_no_ft(ipcp->hccops->key_set, key);
+		_remove_frozen_object(ipcp->hccops->key_set, key);
+	}
+
+	master_set = hccipc_ops_master_set(ipcp->hccops);
+
+	_grab_object_no_ft(master_set, index);
+	_remove_frozen_object(master_set, index);
+
+	local_msg_unlock(msq);
+
+	_remove_frozen_object(ipcp->hccops->data_set, index);
+
+	hcc_ipc_rmid(&msg_ids(ns), index);
+}
 
 #endif
