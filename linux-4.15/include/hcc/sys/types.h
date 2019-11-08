@@ -18,6 +18,17 @@
 
 typedef short hcc_node_t;
 
+typedef unsigned long event_counter_t;
+
+typedef unsigned long physaddr_t;
+
+enum hcc_status {
+	HCC_FIRST_START,
+	HCC_FINAL_STOP,
+	HCC_NODE_STARTING,
+	HCC_NODE_STOPING,
+	HCC_RUNNING_CLUSTER,
+};
 #define __HCC_TYPES__
 
 #endif
