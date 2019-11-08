@@ -74,5 +74,22 @@ static void kcb_ipc_msg_unlock(struct kern_ipc_perm *ipcp)
 	rcu_read_unlock();
 }
 
+static struct kern_ipc_perm *kcb_ipc_msg_findkey(struct ipc_ids *ids, key_t key)
+{
+	long *key_index;
+	int id = -1;
+
+	key_index = _get_object_no_ft(ids->ops->key_set, key);
+
+	if (key_index)
+		id = *key_index;
+
+	_put_object(ids->ops->key_set, key);
+
+	if (id != -1)
+		return kcb_ipc_msg_lock(ids, id);
+
+	return NULL;
+}
 
 #endif
