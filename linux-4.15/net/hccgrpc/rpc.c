@@ -9,6 +9,8 @@
 #include <net/hccgrpc/rpcid.h>
 #include <linux/slab.h>
 #include <linux/hashtable.h>
+#include <linux/spinlock.h>
+#include <linux/lockdep.h>
 #include "rpc_internal.h"
 
 #include <hcc/lib/hashtable.h>
@@ -117,21 +119,21 @@ struct rpc_desc* rpc_desc_alloc(void){
 };
 
 void rpc_enable(enum rpcid rpcid){
-//    spin_lock_bh(&waiting_desc_lock);
-//    if(rpc_services[rpcid]->id == rpcid)
-//        clear_bit(rpcid, rpc_mask);
-//
-//    spin_unlock_bh(&waiting_desc_lock);
+    spin_lock_bh(&waiting_desc_lock);
+    if(rpc_services[rpcid]->id == rpcid)
+        clear_bit(rpcid, rpc_mask);
+
+    spin_unlock_bh(&waiting_desc_lock);
 };
 
 void rpc_enable_all(void){
-//    int i;
-//
-//    for(i=0;i<RPCID_MAX;i++)
-//        rpc_enable(i);
-//
-//    if(!list_empty(&waiting_desc))
-//        rpc_wake_up_thread(NULL);
+    int i;
+
+    for(i=0;i<RPCID_MAX;i++)
+        rpc_enable(i);
+
+    if(!list_empty(&waiting_desc))
+        rpc_wake_up_thread(NULL);
 };
 
 void rpc_disable(enum rpcid rpcid){
@@ -215,6 +217,13 @@ int init_rpc(void)
                                              0, 0, NULL);
     if(!rpc_desc_recv_cachep)
         return -ENOMEM;
+
+    rpc_tx_elem_cachep = kmem_cache_create("rpc_tx_elem",
+                                           sizeof(struct rpc_tx_elem),
+                                           0, 0, NULL);
+    if(!rpc_tx_elem_cachep)
+        return -ENOMEM;
+
 
     rpc_desc_elem_cachep = kmem_cache_create("rpc_desc_elem",
                                              sizeof(struct rpc_desc_elem),
