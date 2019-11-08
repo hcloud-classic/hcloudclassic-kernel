@@ -27,4 +27,77 @@ error_ipcns:
 error:
 	return NULL;
 }
+
+
+int hcc_ipc_get_maxid(struct ipc_ids* ids)
+{
+	ipcmap_object_t *ipc_map;
+	int max_id;
+
+	ipc_map = _get_object(ids->hccops->map_set, 0);
+	max_id = ipc_map->alloc_map - 1;
+	_put_object(ids->hccops->map_set, 0);
+
+	return max_id;
+}
+
+int hcc_ipc_get_new_id(struct ipc_ids* ids)
+{
+	ipcmap_object_t *ipc_map, *max_id;
+	int i = 1, id = -1, offset;
+
+	max_id = _grab_object(ids->hccops->map_set, 0);
+
+	while (id == -1) {
+		ipc_map = _grab_object(ids->hccops->map_set, i);
+
+		if (ipc_map->alloc_map != ULONG_MAX) {
+			offset = find_first_zero_bit(&ipc_map->alloc_map,
+						     BITS_PER_LONG);
+
+			if (offset < BITS_PER_LONG) {
+
+				id = (i-1) * BITS_PER_LONG + offset;
+				set_bit(offset, &ipc_map->alloc_map);
+				if (id >= max_id->alloc_map)
+					max_id->alloc_map = id + 1;
+			}
+		}
+
+		_put_object(ids->hccops->map_set, i);
+		i++;
+	}
+
+	_put_object(ids->hccops->map_set, 0);
+
+	return id;
+}
+
+
+int hcc_ipc_get_this_id(struct ipc_ids *ids, int id)
+{
+	ipcmap_object_t *ipc_map, *max_id;
+	int i, offset, ret = 0;
+
+	max_id = _grab_object(ids->hccops->map_set, 0);
+
+	offset = id % BITS_PER_LONG;
+	i = (id - offset)/BITS_PER_LONG +1;
+
+	ipc_map = _grab_object(ids->hccops->map_set, i);
+
+	if (test_and_set_bit(offset, &ipc_map->alloc_map)) {
+		ret = -EBUSY;
+		goto out_id_unavailable;
+	}
+
+	if (id >= max_id->alloc_map)
+		max_id->alloc_map = id + 1;
+
+out_id_unavailable:
+	_put_object(ids->hccops->map_set, i);
+	_put_object(ids->hccops->map_set, 0);
+
+	return ret;
+}
 #endif
