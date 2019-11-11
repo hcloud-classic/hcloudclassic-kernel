@@ -149,6 +149,24 @@ done:
 
 	return;
 }
+static void do_cleanup_ipc_objects (unique_id_t set_id)
+{
+	ipcmap_object_t *ipc_map;
 
+	ipc_map = _grab_object_no_ft(_def_ns, set_id, 0);
+	if (ipc_map) {
+		BUG_ON (ipc_map->alloc_map != 0);
+		_remove_frozen_object(_def_ns, set_id, 0);
+	}
+	else
+		_put_object(_def_ns, set_id, 0);
+}
+
+void cleanup_ipc_objects ()
+{
+	do_cleanup_ipc_objects (MSGMAP_HCC_ID);
+	do_cleanup_ipc_objects (SEMMAP_HCC_ID);
+	do_cleanup_ipc_objects (SHMMAP_HCC_ID);
+}
 
 #endif
