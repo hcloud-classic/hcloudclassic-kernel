@@ -22,6 +22,16 @@ struct msgsnd_msg
 	size_t msgsz;
 };
 
+struct msgrcv_msg
+{
+	hcc_node_t requester;
+	int msqid;
+	int msgflg;
+	long msgtyp;
+	pid_t tgid;
+	size_t msgsz;
+};
+
 struct master_set *hccipc_ops_master_set(struct hccipc_ops *ipcops)
 {
 	struct msghccops *msgops;
@@ -258,5 +268,44 @@ exit_free_buffer:
 	kfree(buffer);
 exit:
 	return r;
+}
+
+
+
+static void handle_do_msg_send(struct rpc_desc *desc, void *_msg, size_t size)
+{
+	void *mtext;
+	long r;
+	struct msgsnd_msg *msg = _msg;
+	struct ipc_namespace *ns;
+
+	ns = find_get_hcc_ipcns();
+	BUG_ON(!ns);
+
+	mtext = kmalloc(msg->msgsz, GFP_KERNEL);
+	if (!mtext) {
+		r = -ENOMEM;
+		goto exit_put_ns;
+	}
+
+	r = rpc_unpack(desc, 0, mtext, msg->msgsz);
+	if (r)
+		goto exit_free_text;
+
+	r = remote_sleep_prepare(desc);
+	if (r)
+		goto exit_free_text;
+
+	r = __do_msgsnd(msg->msqid, msg->mtype, mtext, msg->msgsz, msg->msgflg,
+			ns, msg->tgid);
+
+	remote_sleep_finish();
+
+	r = rpc_pack_type(desc, r);
+
+exit_free_text:
+	kfree(mtext);
+exit_put_ns:
+	put_ipc_ns(ns);
 }
 #endif
