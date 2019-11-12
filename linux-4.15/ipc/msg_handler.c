@@ -308,4 +308,93 @@ exit_free_text:
 exit_put_ns:
 	put_ipc_ns(ns);
 }
+
+
+long hcc_ipc_msgrcv(int msqid, long *pmtype, void __user *mtext,
+		    size_t msgsz, long msgtyp, int msgflg,
+		    struct ipc_namespace *ns, pid_t tgid)
+{
+	struct rpc_desc * desc;
+	enum rpc_error err;
+	struct maser_set *master_set;
+	hcc_node_t *master_node;
+	void * buffer;
+	long r;
+	int retval;
+	int index;
+	struct msgrcv_msg msg;
+
+	/* TODO: manage ipc namespace */
+	index = ipcid_to_idx(msqid);
+
+	master_set = hccipc_ops_master_set(msg_ids(ns).hccops);
+
+	master_node = _get_object_no_ft(master_set, index);
+	if (!master_node) {
+		_put_object(master_set, index);
+		return -EINVAL;
+	}
+
+	if (*master_node == hcc_node_id) {
+		_put_object(master_set, index);
+		r = __do_msgrcv(msqid, pmtype, mtext, msgsz, msgtyp,
+				msgflg, ns, tgid);
+		return r;
+	}
+
+	msg.requester = hcc_node_id;
+	msg.msqid = msqid;
+	msg.msgtyp = msgtyp;
+	msg.msgflg = msgflg;
+	msg.tgid = tgid;
+	msg.msgsz = msgsz;
+
+	desc = rpc_begin(IPC_MSG_RCV, *master_node);
+	_put_object(master_set, index);
+
+	r = rpc_pack_type(desc, msg);
+	if (r)
+		goto exit;
+
+	r = unpack_remote_sleep_res_prepare(desc);
+	if (r)
+		goto exit;
+
+	err = unpack_remote_sleep_res_type(desc, r);
+	if (!err) {
+		if (r > 0) {
+			err = rpc_unpack(desc, 0, pmtype, sizeof(long));
+			if (err)
+				goto err_rpc;
+
+			buffer = kmalloc(r, GFP_KERNEL);
+			if (!buffer) {
+				r = -ENOMEM;
+				goto exit;
+			}
+
+			err = rpc_unpack(desc, 0, buffer, r);
+			if (err) {
+				kfree(buffer);
+				goto err_rpc;
+			}
+
+			retval = copy_to_user(mtext, buffer, r);
+			kfree(buffer);
+			if (retval)
+				r = retval;
+		}
+	} else {
+		r = err;
+	}
+
+exit:
+	rpc_end(desc, 0);
+	return r;
+
+err_rpc:
+	r = -EPIPE;
+	goto exit;
+}
+
 #endif
