@@ -213,4 +213,14 @@ unreg_msgq_chkpt:
 err:
 	return err;
 }
+
+void ipc_handler_init(void)
+{
+	ipc_procfs_start();
+}
+
+void ipc_handler_finalize(void)
+{
+	ipc_procfs_exit();
+}
 #endif
