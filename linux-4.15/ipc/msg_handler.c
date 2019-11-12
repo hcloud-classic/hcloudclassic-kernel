@@ -12,7 +12,25 @@ struct msghccops {
 	struct hccipc_ops hccops;
 	struct master_set *master_set;
 };
+struct msgsnd_msg
+{
+	hcc_node_t requester;
+	int msqid;
+	int msgflg;
+	long mtype;
+	pid_t tgid;
+	size_t msgsz;
+};
 
+struct msgrcv_msg
+{
+	hcc_node_t requester;
+	int msqid;
+	int msgflg;
+	long msgtyp;
+	pid_t tgid;
+	size_t msgsz;
+};
 
 struct master_set *hccipc_ops_master_set(struct hccipc_ops *ipcops)
 {
@@ -172,6 +190,211 @@ void hcc_ipc_msg_freeque(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 	_remove_frozen_object(ipcp->hccops->data_set, index);
 
 	hcc_ipc_rmid(&msg_ids(ns), index);
+}
+
+
+long hcc_ipc_msgsnd(int msqid, long mtype, void __user *mtext,
+		    size_t msgsz, int msgflg, struct ipc_namespace *ns,
+		    pid_t tgid)
+{
+	struct rpc_desc * desc;
+	struct_set *master_set;
+	hcc_node_t* master_node;
+	void *buffer;
+	long r;
+	int err;
+	int index;
+	struct msgsnd_msg msg;
+
+	index = ipcid_to_idx(msqid);
+
+	master_set = hccipc_ops_master_set(msg_ids(ns).hccops);
+
+	master_node = _get_object_no_ft(master_set, index);
+	if (!master_node) {
+		_put_object(master_set, index);
+		r = -EINVAL;
+		goto exit;
+	}
+
+	if (*master_node == hcc_node_id) {
+		/* inverting the following 2 lines can conduct to deadlock
+		 * if the send is blocked */
+		_put_object(master_set, index);
+		r = __do_msgsnd(msqid, mtype, mtext, msgsz,
+				msgflg, ns, tgid);
+		goto exit;
+	}
+
+	msg.requester = hcc_node_id;
+	msg.msqid = msqid;
+	msg.mtype = mtype;
+	msg.msgflg = msgflg;
+	msg.tgid = tgid;
+	msg.msgsz = msgsz;
+
+	buffer = kmalloc(msgsz, GFP_KERNEL);
+	if (!buffer) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	r = copy_from_user(buffer, mtext, msgsz);
+	if (r)
+		goto exit_free_buffer;
+
+	desc = rpc_begin(IPC_MSG_SEND, *master_node);
+	_put_object(master_set, index);
+
+	r = rpc_pack_type(desc, msg);
+	if (r)
+		goto exit_rpc;
+
+	r = rpc_pack(desc, 0, buffer, msgsz);
+	if (r)
+		goto exit_rpc;
+
+	r = unpack_remote_sleep_res_prepare(desc);
+	if (r)
+		goto exit_rpc;
+
+	err = unpack_remote_sleep_res_type(desc, r);
+	if (err)
+		r = err;
+
+exit_rpc:
+	rpc_end(desc, 0);
+exit_free_buffer:
+	kfree(buffer);
+exit:
+	return r;
+}
+
+
+
+static void handle_do_msg_send(struct rpc_desc *desc, void *_msg, size_t size)
+{
+	void *mtext;
+	long r;
+	struct msgsnd_msg *msg = _msg;
+	struct ipc_namespace *ns;
+
+	ns = find_get_hcc_ipcns();
+	BUG_ON(!ns);
+
+	mtext = kmalloc(msg->msgsz, GFP_KERNEL);
+	if (!mtext) {
+		r = -ENOMEM;
+		goto exit_put_ns;
+	}
+
+	r = rpc_unpack(desc, 0, mtext, msg->msgsz);
+	if (r)
+		goto exit_free_text;
+
+	r = remote_sleep_prepare(desc);
+	if (r)
+		goto exit_free_text;
+
+	r = __do_msgsnd(msg->msqid, msg->mtype, mtext, msg->msgsz, msg->msgflg,
+			ns, msg->tgid);
+
+	remote_sleep_finish();
+
+	r = rpc_pack_type(desc, r);
+
+exit_free_text:
+	kfree(mtext);
+exit_put_ns:
+	put_ipc_ns(ns);
+}
+
+
+long hcc_ipc_msgrcv(int msqid, long *pmtype, void __user *mtext,
+		    size_t msgsz, long msgtyp, int msgflg,
+		    struct ipc_namespace *ns, pid_t tgid)
+{
+	struct rpc_desc * desc;
+	enum rpc_error err;
+	struct maser_set *master_set;
+	hcc_node_t *master_node;
+	void * buffer;
+	long r;
+	int retval;
+	int index;
+	struct msgrcv_msg msg;
+
+	/* TODO: manage ipc namespace */
+	index = ipcid_to_idx(msqid);
+
+	master_set = hccipc_ops_master_set(msg_ids(ns).hccops);
+
+	master_node = _get_object_no_ft(master_set, index);
+	if (!master_node) {
+		_put_object(master_set, index);
+		return -EINVAL;
+	}
+
+	if (*master_node == hcc_node_id) {
+		_put_object(master_set, index);
+		r = __do_msgrcv(msqid, pmtype, mtext, msgsz, msgtyp,
+				msgflg, ns, tgid);
+		return r;
+	}
+
+	msg.requester = hcc_node_id;
+	msg.msqid = msqid;
+	msg.msgtyp = msgtyp;
+	msg.msgflg = msgflg;
+	msg.tgid = tgid;
+	msg.msgsz = msgsz;
+
+	desc = rpc_begin(IPC_MSG_RCV, *master_node);
+	_put_object(master_set, index);
+
+	r = rpc_pack_type(desc, msg);
+	if (r)
+		goto exit;
+
+	r = unpack_remote_sleep_res_prepare(desc);
+	if (r)
+		goto exit;
+
+	err = unpack_remote_sleep_res_type(desc, r);
+	if (!err) {
+		if (r > 0) {
+			err = rpc_unpack(desc, 0, pmtype, sizeof(long));
+			if (err)
+				goto err_rpc;
+
+			buffer = kmalloc(r, GFP_KERNEL);
+			if (!buffer) {
+				r = -ENOMEM;
+				goto exit;
+			}
+
+			err = rpc_unpack(desc, 0, buffer, r);
+			if (err) {
+				kfree(buffer);
+				goto err_rpc;
+			}
+
+			retval = copy_to_user(mtext, buffer, r);
+			kfree(buffer);
+			if (retval)
+				r = retval;
+		}
+	} else {
+		r = err;
+	}
+
+exit:
+	rpc_end(desc, 0);
+	return r;
+
+err_rpc:
+	r = -EPIPE;
+	goto exit;
 }
 
 #endif
