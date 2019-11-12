@@ -169,4 +169,48 @@ void cleanup_ipc_objects ()
 	do_cleanup_ipc_objects (SHMMAP_HCC_ID);
 }
 
+static int ipc_procfs_start(void)
+{
+	int r;
+	int err = -EINVAL;
+
+	r = register_proc_service(KSYS_IPC_MSGQ_CHKPT, proc_msgq_chkpt);
+	if (r != 0)
+		goto err;
+
+	r = register_proc_service(KSYS_IPC_MSGQ_RESTART, proc_msgq_restart);
+	if (r != 0)
+		goto unreg_msgq_chkpt;
+
+	r = register_proc_service(KSYS_IPC_SEM_CHKPT, proc_sem_chkpt);
+	if (r != 0)
+		goto unreg_msgq_restart;
+
+	r = register_proc_service(KSYS_IPC_SEM_RESTART, proc_sem_restart);
+	if (r != 0)
+		goto unreg_sem_chkpt;
+
+	r = register_proc_service(KSYS_IPC_SHM_CHKPT, proc_shm_chkpt);
+	if (r != 0)
+		goto unreg_sem_restart;
+
+	r = register_proc_service(KSYS_IPC_SHM_RESTART, proc_shm_restart);
+	if (r != 0)
+		goto unreg_shm_chkpt;
+
+	return 0;
+
+unreg_shm_chkpt:
+	unregister_proc_service(KSYS_IPC_SHM_CHKPT);
+unreg_sem_restart:
+	unregister_proc_service(KSYS_IPC_SEM_RESTART);
+unreg_sem_chkpt:
+	unregister_proc_service(KSYS_IPC_SEM_CHKPT);
+unreg_msgq_restart:
+	unregister_proc_service(KSYS_IPC_MSGQ_RESTART);
+unreg_msgq_chkpt:
+	unregister_proc_service(KSYS_IPC_MSGQ_CHKPT);
+err:
+	return err;
+}
 #endif
