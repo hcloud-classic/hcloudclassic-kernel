@@ -2,9 +2,10 @@
 #define __RPC__H
 
 #include <net/hccgrpc/rpcid.h>
-#include <linux/spinlock.h>
-#include <hcc/sys/types.h>
 #include <hcc/hccnodemask.h>
+#include <hcc/sys/types.h>
+
+#include <linux/spinlock.h>
 
 enum rpc_target {
     RPC_TARGET_NODE,
@@ -114,26 +115,184 @@ typedef void (*rpc_handler_void_t)(struct rpc_desc* rpc_desc,
 typedef int (*rpc_handler_int_t) (struct rpc_desc* rpc_desc,
                                   void* data, size_t size);
 
+struct rpc_synchro* rpc_synchro_new(int max,
+                                    char *label,
+                                    int order);
+
+int __rpc_register(enum rpcid rpcid,
+                   enum rpc_target rpc_target,
+                   enum rpc_handler rpc_handler,
+                   struct rpc_synchro *rpc_synchro,
+                   void* _h,
+                   unsigned long flags);
+
+struct rpc_desc* rpc_begin_m(enum rpcid rpcid,
+                             hccnodemask_t* nodes);
+
+int rpc_cancel(struct rpc_desc* desc);
+
 int rpc_pack(struct rpc_desc* desc, int flags, const void* data, size_t size);
 int rpc_wait_pack(struct rpc_desc* desc, int seq_id);
 int rpc_cancel_pack(struct rpc_desc* desc);
 
-int init_rpc(void);
-int comlayer_init(void);
+int rpc_forward(struct rpc_desc* desc, hcc_node_t node);
+
+enum rpc_error rpc_unpack(struct rpc_desc* desc, int flags, void* data, size_t size);
+enum rpc_error rpc_unpack_from(struct rpc_desc* desc, hcc_node_t node,
+                               int flags, void* data, size_t size);
+void rpc_cancel_unpack(struct rpc_desc* desc);
+
+hcc_node_t rpc_wait_return(struct rpc_desc* desc, int* value);
+int rpc_wait_return_from(struct rpc_desc* desc, hcc_node_t node);
+int rpc_wait_all(struct rpc_desc *desc);
+
+int rpc_signal(struct rpc_desc* desc, int sigid);
 
 int rpc_end(struct rpc_desc *rpc_desc, int flags);
 
-enum rpc_error rpc_unpack(struct rpc_desc* desc, int flags, void* data, size_t size);
-
 void rpc_free_buffer(struct rpc_data *buf);
 
-void rpc_enable(enum rpcid rpcid);
-void rpc_enable_all(void);
-void rpc_disable(enum rpcid rpcid);
+s64 rpc_consumed_bytes(void);
+
+void rpc_enable_lowmem_mode(hcc_node_t nodeid);
+void rpc_disable_lowmem_mode(hcc_node_t nodeid);
+void rpc_enable_local_lowmem_mode(void);
+void rpc_disable_local_lowmem_mode(void);
 
 #define rpc_pack_type(desc, v) rpc_pack(desc, 0, &v, sizeof(v))
 #define rpc_unpack_type(desc, v) rpc_unpack(desc, 0, &v, sizeof(v))
 #define rpc_unpack_type_from(desc, n, v) rpc_unpack_from(desc, n, 0, &v, sizeof(v))
 
+static inline
+int rpc_register_void(enum rpcid rpcid,
+                      rpc_handler_void_t h,
+                      unsigned long flags){
+    return __rpc_register(rpcid, RPC_TARGET_NODE, RPC_HANDLER_KTHREAD_VOID,
+                          NULL, (rpc_handler_t)h, flags);
+};
+
+static inline
+int rpc_register_int(enum rpcid rpcid,
+                     rpc_handler_int_t h,
+                     unsigned long flags){
+    return __rpc_register(rpcid, RPC_TARGET_NODE, RPC_HANDLER_KTHREAD_INT,
+                          NULL, (rpc_handler_t)h, flags);
+};
+
+static inline
+int rpc_register(enum rpcid rpcid,
+                 rpc_handler_t h,
+                 unsigned long flags){
+    return __rpc_register(rpcid, RPC_TARGET_NODE, RPC_HANDLER_KTHREAD,
+                          NULL, h, flags);
+};
+
+static inline
+struct rpc_desc* rpc_begin(enum rpcid rpcid,
+                           hcc_node_t node){
+    hccnodemask_t nodes;
+
+    hccnodes_clear(nodes);
+    hccnode_set(node, nodes);
+
+    return rpc_begin_m(rpcid, &nodes);
+};
+
+static inline
+int rpc_async_m(enum rpcid rpcid,
+                hccnodemask_t* nodes,
+                const void* data, size_t size){
+    struct rpc_desc* desc;
+    int err = -ENOMEM;
+
+    desc = rpc_begin_m(rpcid, nodes);
+    if (!desc)
+        goto out;
+
+    err = rpc_pack(desc, 0, data, size);
+
+    /* rpc_end() always succeeds without delayed rpc_pack() */
+    rpc_end(desc, 0);
+
+    out:
+    return err;
+};
+
+static inline
+int rpc_async(enum rpcid rpcid,
+              hcc_node_t node,
+              const void* data, size_t size){
+    hccnodemask_t nodes;
+
+    hccnodes_clear(nodes);
+    hccnode_set(node, nodes);
+
+    return rpc_async_m(rpcid, &nodes, data, size);
+};
+
+static inline
+int rpc_sync_m(enum rpcid rpcid,
+               hccnodemask_t* nodes,
+               const void* data, size_t size){
+    struct rpc_desc *desc;
+    int rold, r, first, error;
+    int i;
+
+    r = -ENOMEM;
+    desc = rpc_begin_m(rpcid, nodes);
+    if (!desc)
+        goto out;
+
+    r = rpc_pack(desc, 0, data, size);
+    if (r)
+        goto end;
+
+    i = 0;
+    first = 1;
+    error = 0;
+    r = 0;
+
+    __for_each_hccnode_mask(i, nodes){
+        rpc_unpack_type_from(desc, i, rold);
+        if(first){
+            r = rold;
+            first = 0;
+        }else
+            error = error || (r != rold);
+        i++;
+    };
+
+    end:
+    /* rpc_end() always succeeds without delayed rpc_pack() */
+    rpc_end(desc, 0);
+
+    out:
+    return r;
+};
+
+static inline
+int rpc_sync(enum rpcid rpcid,
+             hcc_node_t node,
+             const void* data, size_t size){
+    hccnodemask_t nodes;
+
+    hccnodes_clear(nodes);
+    hccnode_set(node, nodes);
+
+    return rpc_sync_m(rpcid, &nodes, data, size);
+};
+
+void rpc_enable(enum rpcid rpcid);
+void rpc_enable_all(void);
+void rpc_disable(enum rpcid rpcid);
+
+void rpc_enable_alldev(void);
+int rpc_enable_dev(const char *name);
+void rpc_disable_alldev(void);
+int rpc_disable_dev(const char *name);
+
+hcc_node_t rpc_desc_get_client(struct rpc_desc *desc);
+
+extern struct task_struct *first_hccrpc;
 
 #endif
