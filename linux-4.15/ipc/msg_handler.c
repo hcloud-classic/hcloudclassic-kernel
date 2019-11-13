@@ -397,4 +397,76 @@ err_rpc:
 	goto exit;
 }
 
+
+int hcc_msg_init_ns(struct ipc_namespace *ns)
+{
+	int r;
+
+	struct msghccops *msg_ops = kmalloc(sizeof(struct msghccops),
+					    GFP_KERNEL);
+	if (!msg_ops) {
+		r = -ENOMEM;
+		goto err;
+	}
+
+	msg_ops->hccops.map_set = create_new_set(
+	_def_ns, MSGMAP_KDDM_ID, IPCMAP_LINKER,
+		KDDM_RR_DEF_OWNER, sizeof(ipcmap_object_t),
+		KDDM_LOCAL_EXCLUSIVE);
+
+	if (IS_ERR(msg_ops->hccops.map_set)) {
+		r = PTR_ERR(msg_ops->hccops.map_set);
+		goto err_map;
+	}
+
+	msg_ops->hccops.key_set = create_new_set(
+	_def_ns, MSGKEY_HCC_ID, MSGKEY_LINKER,
+		HCC_RR_DEF_OWNER, sizeof(long),
+		HCC_LOCAL_EXCLUSIVE);
+
+	if (IS_ERR(msg_ops->hccops.key_set)) {
+		r = PTR_ERR(msg_ops->hccops.key_set);
+		goto err_key;
+	}
+
+	msg_ops->hccops.data_set = create_new_set(
+	_def_ns, MSG_HCC_ID, MSG_LINKER,
+		HCC_RR_DEF_OWNER, sizeof(msq_object_t),
+		HCC_LOCAL_EXCLUSIVE);
+
+	if (IS_ERR(msg_ops->hccops.data_set)) {
+		r = PTR_ERR(msg_ops->hccops.data_set);
+		goto err_data;
+	}
+
+	msg_ops->master_set = create_new_set(
+	_def_ns, MSGMASTER_ID, MSGMASTER_LINKER,
+	_RR_DEF_OWNER, sizeof(hcc_node_t),
+	_LOCAL_EXCLUSIVE);
+
+	if (IS_ERR(msg_ops->master_set)) {
+		r = PTR_ERR(msg_ops->master_set);
+		goto err_master;
+	}
+
+	msg_ops->hccops.ipc_lock = kcb_ipc_msg_lock;
+	msg_ops->hccops.ipc_unlock = kcb_ipc_msg_unlock;
+	msg_ops->hccops.ipc_findkey = kcb_ipc_msg_findkey;
+
+	msg_ids(ns).hccops = &msg_ops->hccops;
+
+	return 0;
+
+err_master:
+	_destroy_set(msg_ops->hccops.data_set);
+err_data:
+	_destroy_set(msg_ops->hccops.key_set);
+err_key:
+	_destroy_set(msg_ops->hccops.map_set);
+err_map:
+	kfree(msg_ops);
+err:
+	return r;
+}
+
 #endif
