@@ -181,6 +181,15 @@ extern unsigned long rpc_desc_done_id[HCC_MAX_NODES];
 
 extern spinlock_t rpc_desc_done_lock[HCC_MAX_NODES];
 
+int rpc_pack(struct rpc_desc* desc, int flags, const void* data, size_t size);
+enum rpc_error rpc_unpack(struct rpc_desc* desc, int flags, void* data, size_t size);
+enum rpc_error rpc_unpack_from(struct rpc_desc* desc, kerrighed_node_t node,
+			       int flags, void* data, size_t size);
+int rpc_end(struct rpc_desc *rpc_desc, int flags);
+#define rpc_pack_type(desc, v) rpc_pack(desc, 0, &v, sizeof(v))
+#define rpc_unpack_type(desc, v) rpc_unpack(desc, 0, &v, sizeof(v))
+#define rpc_unpack_type_from(desc, n, v) rpc_unpack_from(desc, n, 0, &v, sizeof(v))
+
 static inline
 int __rpc_synchro_get(struct __rpc_synchro *__rpc_synchro){
     return !atomic_inc_not_zero(&__rpc_synchro->usage);
@@ -222,3 +231,8 @@ void __rpc_synchro_put(struct __rpc_synchro *__rpc_synchro)
                         __rpc_synchro);
     }
 }
+
+
+
+
+#endif
