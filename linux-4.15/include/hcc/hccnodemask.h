@@ -1,8 +1,11 @@
 #ifndef __HCCNODEMASK__
 #define __HCCNODEMASK__
 
+#include <linux/kernel.h>
+#include <linux/threads.h>
 #include <linux/bitmap.h>
 #include <hcc/sys/types.h>
+#include <hcc/hccinit.h>
 
 typedef struct { DECLARE_BITMAP(bits, HCC_MAX_NODES); } hccnodemask_t;
 typedef struct { DECLARE_BITMAP(bits, HCC_HARD_MAX_NODES); } __hccnodemask_t;
@@ -151,6 +154,97 @@ static inline int __next_hccnode(int n, const hccnodemask_t *srcp)
     return min_t(int, HCC_MAX_NODES,find_next_bit(srcp->bits, HCC_MAX_NODES, n+1));
 }
 
+// edit
+
+#define hccnodemask_of_node(node)						\
+({									\
+	typeof(_unused_hccnodemask_arg_) m;					\
+	if (sizeof(m) == sizeof(unsigned long)) {			\
+		m.bits[0] = 1UL<<(node);					\
+	} else {							\
+		hccnodes_clear(m);						\
+		hccnode_set((node), m);					\
+	}								\
+	m;								\
+})
+
+#define HCCNODE_MASK_LAST_WORD BITMAP_LAST_WORD_MASK(HCC_MAX_NODES)
+
+#if HCC_MAX_NODES <= BITS_PER_LONG
+
+#define HCCNODE_MASK_ALL							\
+(hccnodemask_t) { {								\
+	[BITS_TO_LONGS(HCC_MAX_NODES)-1] = HCCNODE_MASK_LAST_WORD			\
+} }
+
+#else
+
+#define HCCNODE_MASK_ALL							\
+(hccnodemask_t) { {								\
+	[0 ... BITS_TO_LONGS(HCC_MAX_NODES)-2] = ~0UL,			\
+	[BITS_TO_LONGS(HCC_MAX_NODES)-1] = HCCNODE_MASK_LAST_WORD			\
+} }
+
+#endif
+
+#define HCCNODE_MASK_NONE							\
+(hccnodemask_t) { {								\
+	[0 ... BITS_TO_LONGS(HCC_MAX_NODES)-1] =  0UL				\
+} }
+
+#define HCCNODE_MASK_NODE0							\
+(hccnodemask_t) { {								\
+	[0] =  1UL							\
+} }
+
+#define hccnodes_addr(src) ((src).bits)
+
+#define hccnodemask_scnprintf(buf, len, src) \
+			__hccnodemask_scnprintf((buf), (len), &(src), HCC_MAX_NODES)
+static inline int __hccnodemask_scnprintf(char *buf, int len,
+                                          const hccnodemask_t *srcp, int nbits)
+{
+    return bitmap_scnprintf(buf, len, srcp->bits, nbits);
+}
+
+#define hccnodemask_parse_user(ubuf, ulen, dst) \
+			__hccnodemask_parse_user((ubuf), (ulen), &(dst), HCC_MAX_NODES)
+static inline int __hccnodemask_parse_user(const char __user *buf, int len,
+        hccnodemask_t *dstp, int nbits)
+{
+return bitmap_parse_user(buf, len, dstp->bits, nbits);
+}
+
+#define hccnodelist_scnprintf(buf, len, src) \
+			__hccnodelist_scnprintf((buf), (len), &(src), HCC_MAX_NODES)
+static inline int __hccnodelist_scnprintf(char *buf, int len,
+                                          const hccnodemask_t *srcp, int nbits)
+{
+    return bitmap_scnlistprintf(buf, len, srcp->bits, nbits);
+}
+
+#define hccnodelist_parse(buf, dst) __hccnodelist_parse((buf), &(dst), HCC_MAX_NODES)
+static inline int __hccnodelist_parse(const char *buf, hccnodemask_t *dstp, int nbits)
+{
+    return bitmap_parselist(buf, dstp->bits, nbits);
+}
+
+#define hccnode_remap(oldbit, old, new) \
+		__hccnode_remap((oldbit), &(old), &(new), HCC_MAX_NODES)
+static inline int __hccnode_remap(int oldbit,
+                                  const hccnodemask_t *oldp, const hccnodemask_t *newp, int nbits)
+{
+    return bitmap_bitremap(oldbit, oldp->bits, newp->bits, nbits);
+}
+
+#define hccnodes_remap(dst, src, old, new) \
+		__hccnodes_remap(&(dst), &(src), &(old), &(new), HCC_MAX_NODES)
+static inline void __hccnodes_remap(hccnodemask_t *dstp, const hccnodemask_t *srcp,
+const hccnodemask_t *oldp, const hccnodemask_t *newp, int nbits)
+{
+bitmap_remap(dstp->bits, srcp->bits, oldp->bits, newp->bits, nbits);
+}
+
 #if HCC_MAX_NODES > 1
 #define for_each_hccnode_mask(node, mask)		\
 	for ((node) = first_hccnode(mask);		\
@@ -160,6 +254,112 @@ static inline int __next_hccnode(int n, const hccnodemask_t *srcp)
 	for ((node) = __first_hccnode(mask);		\
 		(node) < HCC_MAX_NODES;		\
 		(node) = __next_hccnode((node), (mask)))
+#else /* HCC_MAX_NODES == 1 */
+#define for_each_hccnode_mask(node, mask)		\
+	for ((node) = hcc_node_id; (node) < (hcc_node_id+1); (node)++, (void)mask)
+#define __for_each_hccnode_mask(node, mask)		\
+	for ((node) = hcc_node_id; (node) < (hcc_node_id+1); (node)++, (void)mask)
+#endif /* HCC_MAX_NODES */
+
+#define next_hccnode_in_ring(node, v) __next_hccnode_in_ring(node, &(v))
+static inline hcc_node_t __next_hccnode_in_ring(hcc_node_t node,
+                                                      const hccnodemask_t *v)
+{
+    hcc_node_t res;
+    res = __next_hccnode(node, v);
+
+    if (res < HCC_MAX_NODES)
+        return res;
+
+    return __first_hccnode(v);
+}
+
+#define nth_hccnode(node, v) __nth_hccnode(node, &(v))
+static inline hcc_node_t __nth_hccnode(hcc_node_t node,
+                                             const hccnodemask_t *v)
+{
+    hcc_node_t iter;
+
+    iter = __first_hccnode(v);
+    while (node > 0) {
+        iter = __next_hccnode(iter, v);
+        node--;
+    }
+
+    return iter;
+}
+
+/** Return true if the index is the only one set in the vector */
+#define hccnode_is_unique(node, v) __hccnode_is_unique(node, &(v))
+static inline int __hccnode_is_unique(hcc_node_t node,
+                                      const hccnodemask_t *v)
+{
+    int i;
+
+    i = __first_hccnode(v);
+    if(i != node) return 0;
+
+    i = __next_hccnode(node, v);
+    if(i != HCC_MAX_NODES) return 0;
+
+    return 1;
+}
+
+/*
+ * hccnode_online_map: list of nodes available as object injection target
+ * hccnode_present_map: list of nodes ready to be added in a cluster
+ * hccnode_possible_map: list of nodes that may join the cluster in the future
+ */
+
+extern hccnodemask_t hccnode_possible_map;
+extern hccnodemask_t hccnode_online_map;
+extern hccnodemask_t hccnode_present_map;
+
+#if HCC_MAX_NODES > 1
+#define num_online_hccnodes()	hccnodes_weight(hccnode_online_map)
+#define num_possible_hccnodes()	hccnodes_weight(hccnode_possible_map)
+#define num_present_hccnodes()	hccnodes_weight(hccnode_present_map)
+#define hccnode_online(node)	hccnode_isset((node), hccnode_online_map)
+#define hccnode_possible(node)	hccnode_isset((node), hccnode_possible_map)
+#define hccnode_present(node)	hccnode_isset((node), hccnode_present_map)
+
+#define any_online_hccnode(mask) __any_online_hccnode(&(mask))
+int __any_online_hccnode(const hccnodemask_t *mask);
+
+#else
+
+#define num_online_hccnodes()	1
+#define num_possible_hccnodes()	1
+#define num_present_hccnodes()	1
+#define hccnode_online(node)		((node) == hcc_node_id)
+#define hccnode_possible(node)	((node) == hcc_node_id)
+#define hccnode_present(node)	((node) == hcc_node_id)
+
+#define any_online_hccnode(mask)		hcc_node_id
 #endif
+
+#define for_each_possible_hccnode(node)  for_each_hccnode_mask((node), hccnode_possible_map)
+#define for_each_online_hccnode(node)  for_each_hccnode_mask((node), hccnode_online_map)
+#define for_each_present_hccnode(node) for_each_hccnode_mask((node), hccnode_present_map)
+
+#define set_hccnode_possible(node) hccnode_set(node, hccnode_possible_map)
+#define set_hccnode_online(node)   hccnode_set(node, hccnode_online_map)
+#define set_hccnode_present(node)  hccnode_set(node, hccnode_present_map)
+
+#define clear_hccnode_possible(node) hccnode_clear(node, hccnode_possible_map)
+#define clear_hccnode_online(node)   hccnode_clear(node, hccnode_online_map)
+#define clear_hccnode_present(node)  hccnode_clear(node, hccnode_present_map)
+
+#define nth_possible_hccnode(node) nth_hccnode(node, hccnode_possible_map)
+#define nth_online_hccnode(node) nth_hccnode(node, hccnode_online_map)
+#define nth_present_hccnode(node) nth_hccnode(node, hccnode_present_map)
+
+#define hccnode_next_possible(node) next_hccnode(node, hccnode_possible_map)
+#define hccnode_next_online(node) next_hccnode(node, hccnode_online_map)
+#define hccnode_next_present(node) next_hccnode(node, hccnode_present_map)
+
+#define hccnode_next_possible_in_ring(node) next_hccnode_in_ring(node, hccnode_possible_map)
+#define hccnode_next_online_in_ring(node) next_hccnode_in_ring(node, hccnode_online_map)
+#define hccnode_next_present_in_ring(node) next_hccnode_in_ring(node, hccnode_present_map)	    
 
 #endif
