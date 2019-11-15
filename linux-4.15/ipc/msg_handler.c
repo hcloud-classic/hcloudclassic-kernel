@@ -410,9 +410,9 @@ int hcc_msg_init_ns(struct ipc_namespace *ns)
 	}
 
 	msg_ops->hccops.map_set = create_new_set(
-	_def_ns, MSGMAP_KDDM_ID, IPCMAP_LINKER,
-		KDDM_RR_DEF_OWNER, sizeof(ipcmap_object_t),
-		KDDM_LOCAL_EXCLUSIVE);
+	_def_ns, MSGMAP_HCC_ID, IPCMAP_LINKER,
+		HCC_RR_DEF_OWNER, sizeof(ipcmap_object_t),
+		HCC_LOCAL_EXCLUSIVE);
 
 	if (IS_ERR(msg_ops->hccops.map_set)) {
 		r = PTR_ERR(msg_ops->hccops.map_set);
@@ -468,5 +468,39 @@ err_map:
 err:
 	return r;
 }
+
+
+void hcc_msg_exit_ns(struct ipc_namespace *ns)
+{
+	if (msg_ids(ns).hccops) {
+		struct msghccops *msg_ops;
+
+		msg_ops = container_of(msg_ids(ns).hccops, struct msghccops,
+				       hccops);
+
+		_destroy_set(msg_ops->hccops.map_set);
+		_destroy_set(msg_ops->hccops.key_set);
+		_destroy_set(msg_ops->hccops.data_set);
+		_destroy_set(msg_ops->master_set);
+
+		kfree(msg_ops);
+	}
+}
+void msg_handler_init(void)
+{
+	msq_object_cachep = kmem_cache_create("msg_queue_object",
+					      sizeof(msq_object_t),
+					      0, SLAB_PANIC, NULL);
+
+	register_io_linker(MSG_LINKER, &msq_linker);
+	register_io_linker(MSGKEY_LINKER, &msqkey_linker);
+	register_io_linker(MSGMASTER_LINKER, &msqmaster_linker);
+
+	rpc_register_void(IPC_MSG_SEND, handle_do_msg_send, 0);
+	rpc_register_void(IPC_MSG_RCV, handle_do_msg_rcv, 0);
+	rpc_register_void(IPC_MSG_CHKPT, handle_msg_checkpoint, 0);
+}
+
+
 
 #endif
