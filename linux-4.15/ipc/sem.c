@@ -1163,23 +1163,44 @@ static int count_semcnt(struct sem_array *sma, ushort semnum,
 			bool count_zero)
 {
 	struct list_head *l;
+#ifdef CONFIG_HCC_IPC
+	struct list_head *inno_l;
+#endif
 	struct sem_queue *q;
 	int semcnt;
 
 	semcnt = 0;
 	/* First: check the simple operations. They are easy to evaluate */
 	if (count_zero)
+#ifdef CONFIG_HCC_IPC
+	{
+#endif
 		l = &sma->sems[semnum].pending_const;
+#ifdef CONFIG_HCC_IPC
+		inno_l = &sma->sems[semnum].remote_pending_const;
+	}
+#endif
 	else
+#ifdef CONFIG_HCC_IPC
+	{
+#endif
 		l = &sma->sems[semnum].pending_alter;
-
+#ifdef CONFIG_HCC_IPC
+		inno_l = &sma->sems[semnum].remote_pending_alter;
+	}
+#endif
 	list_for_each_entry(q, l, list) {
 		/* all task on a per-semaphore list sleep on exactly
 		 * that semaphore
 		 */
 		semcnt++;
 	}
-
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry(q, &sma->pending_alter, list)
+	{
+		semcnt += check_qop(sma, semnum, q, count_zero);
+	}
+#endif
 	/* Then: check the complex operations. */
 	list_for_each_entry(q, &sma->pending_alter, list) {
 		semcnt += check_qop(sma, semnum, q, count_zero);
@@ -1189,6 +1210,17 @@ static int count_semcnt(struct sem_array *sma, ushort semnum,
 			semcnt += check_qop(sma, semnum, q, count_zero);
 		}
 	}
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry(q, &sma->remote_pending_const, list)
+	{
+		struct sembuf *sops = q->sops;
+		int nsops = q->nsops;
+		int i;
+		for (i = 0; i < nsops; i++)
+			if (sops[i].sem_num == semnum && (sops[i].sem_op < 0) && !(sops[i].sem_flg & IPC_NOWAIT))
+				semncnt++;
+	}
+#endif
 	return semcnt;
 }
 
