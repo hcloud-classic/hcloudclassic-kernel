@@ -332,7 +332,10 @@ static void complexmode_tryleave(struct sem_array *sma)
  * multiple semaphores in our own semops, or we need to look at
  * semaphores from other pending complex operations.
  */
-static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
+#ifndef CONFIG_HCC_IPC
+static inline
+#endif
+int sem_lock(struct sem_array *sma, struct sembuf *sops,
 			      int nsops)
 {
 	struct sem *sem;
@@ -364,14 +367,21 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 		 * It appears that no complex operation is around.
 		 * Acquire the per-semaphore lock.
 		 */
+#ifdef CONFIG_HCC_IPC
+		mutex_lock(&sem->mutex);
+#else
 		spin_lock(&sem->lock);
-
+#endif
 		/* pairs with smp_store_release() */
 		if (!smp_load_acquire(&sma->use_global_lock)) {
 			/* fast path successful! */
 			return sops->sem_num;
 		}
+#ifdef CONFIG_HCC_IPC
+		mutex_unlock(&sem->mutex);
+#else
 		spin_unlock(&sem->lock);
+#endif
 	}
 
 	/* slow path: acquire the full lock */
@@ -387,8 +397,11 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 		 * We own sma->sem_perm.lock, thus use_global_lock cannot
 		 * change.
 		 */
+#ifdef CONFIG_HCC_IPC
+		mutex_lock(&sem->mutex);
+#else
 		spin_lock(&sem->lock);
-
+#endif
 		ipc_unlock_object(&sma->sem_perm);
 		return sops->sem_num;
 	} else {
@@ -400,7 +413,7 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 		return SEM_GLOBAL_LOCK;
 	}
 }
-
+#ifndef CONFIG_HCC_IPC
 static inline void sem_unlock(struct sem_array *sma, int locknum)
 {
 	if (locknum == SEM_GLOBAL_LOCK) {
@@ -412,14 +425,17 @@ static inline void sem_unlock(struct sem_array *sma, int locknum)
 		spin_unlock(&sem->lock);
 	}
 }
-
+#endif
 /*
  * sem_lock_(check_) routines are called in the paths where the rwsem
  * is not held.
  *
  * The caller holds the RCU read lock.
  */
-static inline struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int id)
+#ifndef  CONFIG_HCC_IPC
+static inline 
+#endif
+struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&sem_ids(ns), id);
 
@@ -429,7 +445,10 @@ static inline struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int 
 	return container_of(ipcp, struct sem_array, sem_perm);
 }
 
-static inline struct sem_array *sem_obtain_object_check(struct ipc_namespace *ns,
+#ifndef  CONFIG_HCC_IPC
+static inline 
+#endif
+struct sem_array *sem_obtain_object_check(struct ipc_namespace *ns,
 							int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_obtain_object_check(&sem_ids(ns), id);
