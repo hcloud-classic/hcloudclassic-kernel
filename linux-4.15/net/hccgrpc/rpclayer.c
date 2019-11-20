@@ -107,7 +107,7 @@ struct rpc_desc* rpc_begin_m(enum rpcid rpcid,
 
 	__hccnodes_copy(&desc->nodes, nodes);
 	desc->type = RPC_RQ_CLT;
-	desc->client = HCC_NODE_ID; // kerrighed_node_id
+	desc->client = HCC_NODE_ID; 
 
 	desc->desc_send = rpc_desc_send_alloc();
 	if(!desc->desc_send)
@@ -121,7 +121,7 @@ struct rpc_desc* rpc_begin_m(enum rpcid rpcid,
 
 	desc->rpcid = rpcid;
 	desc->service = rpc_services[rpcid];
-	desc->client = HCC_NODE_ID; // kerrighed_node_id
+	desc->client = HCC_NODE_ID; 
 
 	if (__rpc_emergency_send_buf_alloc(desc, 0))
 		goto oom_free_desc_recv;

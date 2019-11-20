@@ -15,6 +15,7 @@
 #include <linux/netdevice.h>
 #include <linux/list.h>
 #include <linux/slab.h>
+#include <linux/socket.h>
 
 #include <linux/workqueue.h>
 #include <linux/net_namespace.h>
@@ -146,23 +147,47 @@ void __rpc_get_raw_data(void *data)
 static
 inline int __send_iovec(hcc_node_t node, int nr_iov, struct iovec *iov)
 {
+
+    struct msghdr m = {NULL,}; // cgs
+    int err;
+    struct socket *tipc_socket;
+    struct sock *sk;
+
+    m.msg_name = iov->iov_base;
+    m.msg_namelen = iov->iov_len;
+    m.msg_flags = MSG_DONTWAIT;
+
 //    struct tipc_name name = {
 //            .type = TIPC_HCC_SERVER_TYPE,
 //            .instance = node
 //    };
 //    struct __rpc_header *h = iov[0].iov_base;
-//    int err;
-//
+
+    printk(KERN_INFO "HCC: __send_iovec");
+    printk(KERN_INFO "HCC: node : %d", node);
+    printk(KERN_INFO "HCC: nr_iov : %d", nr_iov);
+    printk(KERN_INFO "HCC: iov  : %p", iov->iov_base);
+    printk(KERN_INFO "HCC: iov iov_len : %ld", iov->iov_len);
+    printk(KERN_INFO "HCC: smp_processor_id %d", smp_processor_id());
+
+    tipc_socket = &per_cpu(tipc_send_ref, smp_processor_id());
+    sk = tipc_socket->sk;
+    if(sk){
+        printk(KERN_INFO "HCC: __send_iovec - owned %d", sk->sk_lock.owned);
+        spin_unlock_bh(&sk->sk_lock.slock);
+    }
+
 //    h->link_ack_id = rpc_link_recv_seq_id[node] - 1;
-//    lockdep_off();
-//    err = tipc_sendmsg(&per_cpu(tipc_send_ref, smp_processor_id()),
-//                         iov->addr, (int)iov->len);
-//
+
+    lockdep_off();
+    err = tipc_sendmsg(&per_cpu(tipc_send_ref, smp_processor_id()), &m, 2);
+
+// old code for tipc send function
 //    err = tipc_send2name(per_cpu(tipc_send_ref, smp_processor_id()),
 //                         &name, 0,
 //                         nr_iov, iov);
-//
-//    lockdep_on();
+
+    lockdep_on();
 //    if (!err)
 //        consecutive_recv[node] = 0;
 //    return err;
@@ -188,12 +213,15 @@ static struct rpc_tx_elem *__rpc_tx_elem_alloc(size_t size, int nr_dest)
     elem = kmem_cache_alloc(rpc_tx_elem_cachep, GFP_ATOMIC);
     if (!elem)
         goto oom;
+
     consumed_bytes_add(size);
     elem->data = kmalloc(size, GFP_ATOMIC);
     if (!elem->data)
         goto oom_free_elem;
+
     elem->link_seq_id = kmalloc(sizeof(*elem->link_seq_id) * nr_dest,
                                 GFP_ATOMIC);
+
     elem->iov[1].iov_len = size;
     if (!elem->link_seq_id)
         goto oom_free_data;
@@ -474,21 +502,28 @@ int __rpc_emergency_send_buf_alloc(struct rpc_desc *desc, size_t size)
     int err = 0;
     int i;
 
+    printk(KERN_INFO "HCC: __rpc_emergency_send_buf_alloc - start");
+
     elem = kmalloc(sizeof(*elem) * MAX_EMERGENCY_SEND, GFP_ATOMIC);
     if (!elem)
         goto oom;
     nr_dest = hccnodes_weight(desc->nodes);
+
     for (i = 0; i < MAX_EMERGENCY_SEND; i++) {
         elem[i] = __rpc_tx_elem_alloc(size, nr_dest);
         if (!elem[i])
             goto oom_free_elems;
     }
+
     desc->desc_send->emergency_send_buf = elem;
+
+    printk(KERN_INFO "HCC: __rpc_emergency_send_buf_alloc - end");
 
     out:
     return err;
 
     oom_free_elems:
+
     for (i--; i >= 0; i--)
         __rpc_tx_elem_free(elem[i]);
     kfree(elem);
@@ -537,6 +572,8 @@ int __rpc_send_ll(struct rpc_desc* desc,
     struct tx_manager *manager;
     hcc_node_t node;
     int link_seq_index;
+
+    printk(KERN_INFO "HCC: __rpc_send_ll");
 
     elem = __rpc_tx_elem_alloc(size, __hccnodes_weight(nodes));
     if (!elem) {
@@ -1054,6 +1091,7 @@ int comlayer_init(void) {
 
     for_each_possible_cpu(i){
         struct socket *send_ref = &per_cpu(tipc_send_ref, i);
+        struct sock *sk;
 
         res = sock_create_kern(net, AF_TIPC, SOCK_SEQPACKET, 0, &send_ref);
         if (res)
@@ -1079,6 +1117,11 @@ int comlayer_init(void) {
 //            spin_unlock_bh(p->lock);
 //            goto exit_error;
 //        }
+
+        sk = send_ref->sk;
+        if(sk){
+            spin_unlock_bh(&sk->sk_lock.slock);
+        }
     };
 
     lockdep_on();
