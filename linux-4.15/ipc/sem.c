@@ -1377,28 +1377,49 @@ static time64_t get_semotime(struct sem_array *sma)
 }
 
 static int semctl_stat(struct ipc_namespace *ns, int semid,
-			 int cmd, struct semid64_ds *semid64)
+					   int cmd, struct semid64_ds *semid64)
 {
 	struct sem_array *sma;
 	int id = 0;
 	int err;
-
+#ifdef CONFIG_HCC_IPC
+		down_read(&sem_ids(ns).rwsem);
+#endif
 	memset(semid64, 0, sizeof(*semid64));
 
 	rcu_read_lock();
-	if (cmd == SEM_STAT) {
+	if (cmd == SEM_STAT)
+	{
 		sma = sem_obtain_object(ns, semid);
-		if (IS_ERR(sma)) {
+		if (IS_ERR(sma))
+#ifdef CONFIG_HCC_IPC
+		{
+			up_read(&sem_ids(ns).rw_mutex);
+			return PTR_ERR(sma);
+		}
+#else
+		{
 			err = PTR_ERR(sma);
 			goto out_unlock;
 		}
+#endif
 		id = sma->sem_perm.id;
-	} else {
+	}
+	else
+	{
 		sma = sem_obtain_object_check(ns, semid);
-		if (IS_ERR(sma)) {
+		if (IS_ERR(sma))
+#ifdef CONFIG_HCC_IPC
+		{
+			up_read(&sem_ids(ns).rw_mutex);
+			return PTR_ERR(sma);
+		}
+#else
+		{
 			err = PTR_ERR(sma);
 			goto out_unlock;
 		}
+#endif
 	}
 
 	err = -EACCES;
@@ -1414,10 +1435,16 @@ static int semctl_stat(struct ipc_namespace *ns, int semid,
 	semid64->sem_ctime = sma->sem_ctime;
 	semid64->sem_nsems = sma->sem_nsems;
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+	up_read(&sem_ids(ns).rwsem);
+#endif
 	return id;
 
 out_unlock:
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+	up_read(&sem_ids(ns).rwsem);
+#endif
 	return err;
 }
 
@@ -1457,7 +1484,7 @@ static int semctl_info(struct ipc_namespace *ns, int semid,
 }
 
 static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
-		int val)
+						 int val)
 {
 	struct sem_undo *un;
 	struct sem_array *sma;
@@ -1470,31 +1497,35 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 
 	rcu_read_lock();
 	sma = sem_obtain_object_check(ns, semid);
-	if (IS_ERR(sma)) {
+	if (IS_ERR(sma))
+	{
 		rcu_read_unlock();
 		return PTR_ERR(sma);
 	}
 
-	if (semnum < 0 || semnum >= sma->sem_nsems) {
+	if (semnum < 0 || semnum >= sma->sem_nsems)
+	{
 		rcu_read_unlock();
 		return -EINVAL;
 	}
 
-
-	if (ipcperms(ns, &sma->sem_perm, S_IWUGO)) {
+	if (ipcperms(ns, &sma->sem_perm, S_IWUGO))
+	{
 		rcu_read_unlock();
 		return -EACCES;
 	}
 
 	err = security_sem_semctl(sma, SETVAL);
-	if (err) {
+	if (err)
+	{
 		rcu_read_unlock();
 		return -EACCES;
 	}
 
 	sem_lock(sma, NULL, -1);
 
-	if (!ipc_valid_object(&sma->sem_perm)) {
+	if (!ipc_valid_object(&sma->sem_perm))
+	{
 		sem_unlock(sma, -1);
 		rcu_read_unlock();
 		return -EIDRM;
@@ -1521,7 +1552,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 }
 
 static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
-		int cmd, void __user *p)
+					   int cmd, void __user *p)
 {
 	struct sem_array *sma;
 	struct sem *curr;
@@ -1530,9 +1561,16 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 	ushort *sem_io = fast_sem_io;
 	DEFINE_WAKE_Q(wake_q);
 
+#ifdef CONFIG_HCC_IPC
+	down_read(&sem_ids(ns).rw_mutex);
+#endif
 	rcu_read_lock();
 	sma = sem_obtain_object_check(ns, semid);
-	if (IS_ERR(sma)) {
+	if (IS_ERR(sma))
+	{
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(ns).rw_mutex);
+#endif
 		rcu_read_unlock();
 		return PTR_ERR(sma);
 	}
@@ -1548,44 +1586,60 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 		goto out_rcu_wakeup;
 
 	err = -EACCES;
-	switch (cmd) {
+	switch (cmd)
+	{
 	case GETALL:
 	{
 		ushort __user *array = p;
 		int i;
 
 		sem_lock(sma, NULL, -1);
-		if (!ipc_valid_object(&sma->sem_perm)) {
+		if (!ipc_valid_object(&sma->sem_perm))
+		{
 			err = -EIDRM;
 			goto out_unlock;
 		}
-		if (nsems > SEMMSL_FAST) {
-			if (!ipc_rcu_getref(&sma->sem_perm)) {
+		if (nsems > SEMMSL_FAST)
+		{
+#ifndef CONFIG_HCC_IPC
+			if (!ipc_rcu_getref(&sma->sem_perm))
+			{
 				err = -EIDRM;
 				goto out_unlock;
 			}
+#endif
 			sem_unlock(sma, -1);
 			rcu_read_unlock();
+
 			sem_io = kvmalloc_array(nsems, sizeof(ushort),
-						GFP_KERNEL);
-			if (sem_io == NULL) {
+									GFP_KERNEL);
+			if (sem_io == NULL)
+			{
+#ifdef CONFIG_HCC_IPC		
+				err = -ENOMEM;
+				goto out_unlock;
+			}
+			BUG_ON(sma->sem_perm.deleted);		
+#else
 				ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 				return -ENOMEM;
 			}
 
 			rcu_read_lock();
 			sem_lock_and_putref(sma);
-			if (!ipc_valid_object(&sma->sem_perm)) {
+			if (!ipc_valid_object(&sma->sem_perm))
+			{
 				err = -EIDRM;
 				goto out_unlock;
 			}
+#endif
 		}
 		for (i = 0; i < sma->sem_nsems; i++)
 			sem_io[i] = sma->sems[i].semval;
 		sem_unlock(sma, -1);
 		rcu_read_unlock();
 		err = 0;
-		if (copy_to_user(array, sem_io, nsems*sizeof(ushort)))
+		if (copy_to_user(array, sem_io, nsems * sizeof(ushort)))
 			err = -EFAULT;
 		goto out_free;
 	}
@@ -1593,49 +1647,81 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 	{
 		int i;
 		struct sem_undo *un;
-
-		if (!ipc_rcu_getref(&sma->sem_perm)) {
+#ifndef CONFIG_HCC_IPC
+		if (!ipc_rcu_getref(&sma->sem_perm))
+		{
 			err = -EIDRM;
 			goto out_rcu_wakeup;
 		}
+#endif
 		rcu_read_unlock();
 
-		if (nsems > SEMMSL_FAST) {
+		if (nsems > SEMMSL_FAST)
+		{
 			sem_io = kvmalloc_array(nsems, sizeof(ushort),
-						GFP_KERNEL);
-			if (sem_io == NULL) {
+									GFP_KERNEL);
+			if (sem_io == NULL)
+			{
+#ifdef CONFIG_HCC_IPC
+				err = -ENOMEM;
+				goto out_unlock;
+#else
 				ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 				return -ENOMEM;
+#endif
 			}
 		}
 
-		if (copy_from_user(sem_io, p, nsems*sizeof(ushort))) {
+		if (copy_from_user(sem_io, p, nsems * sizeof(ushort)))
+		{
+#ifdef CONFIG_HCC_IPC
+			err = -EFAULT;
+			goto out_unlock;
+#else
 			ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 			err = -EFAULT;
 			goto out_free;
+#endif
 		}
 
-		for (i = 0; i < nsems; i++) {
-			if (sem_io[i] > SEMVMX) {
+		for (i = 0; i < nsems; i++)
+		{
+			if (sem_io[i] > SEMVMX)
+			{
+#ifdef CONFIG_HCC_IPC
+				err = -ERANGE;
+				goto out_unlock;
+#else
 				ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 				err = -ERANGE;
 				goto out_free;
+#endif
 			}
 		}
+#ifdef CONFIG_HCC_IPC
+		BUG_ON(sma->sem_perm.deleted);
+#else
 		rcu_read_lock();
 		sem_lock_and_putref(sma);
-		if (!ipc_valid_object(&sma->sem_perm)) {
+		if (!ipc_valid_object(&sma->sem_perm))
+		{
 			err = -EIDRM;
 			goto out_unlock;
 		}
+#endif
 
-		for (i = 0; i < nsems; i++) {
+		for (i = 0; i < nsems; i++)
+		{
 			sma->sems[i].semval = sem_io[i];
 			sma->sems[i].sempid = task_tgid_vnr(current);
 		}
-
+#ifdef CONFIG_HCC_IPC
+		assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 		ipc_assert_locked_object(&sma->sem_perm);
-		list_for_each_entry(un, &sma->list_id, list_id) {
+#endif
+		list_for_each_entry(un, &sma->list_id, list_id)
+		{
 			for (i = 0; i < nsems; i++)
 				un->semadj[i] = 0;
 		}
@@ -1645,20 +1731,22 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 		err = 0;
 		goto out_unlock;
 	}
-	/* GETVAL, GETPID, GETNCTN, GETZCNT: fall-through */
+		/* GETVAL, GETPID, GETNCTN, GETZCNT: fall-through */
 	}
 	err = -EINVAL;
 	if (semnum < 0 || semnum >= nsems)
 		goto out_rcu_wakeup;
 
 	sem_lock(sma, NULL, -1);
-	if (!ipc_valid_object(&sma->sem_perm)) {
+	if (!ipc_valid_object(&sma->sem_perm))
+	{
 		err = -EIDRM;
 		goto out_unlock;
 	}
 	curr = &sma->sems[semnum];
 
-	switch (cmd) {
+	switch (cmd)
+	{
 	case GETVAL:
 		err = curr->semval;
 		goto out_unlock;
