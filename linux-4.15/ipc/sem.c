@@ -1228,14 +1228,28 @@ static int count_semcnt(struct sem_array *sma, ushort semnum,
  * as a writer and the spinlock for this semaphore set hold. sem_ids.rwsem
  * remains locked on exit.
  */
+#ifdef CONFIG_HCC_IPC
 static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
+{
+	if (is_hcc_ipc(&sem_ids(ns)))
+		hcc_ipc_sem_freeary(ns, ipcp);
+	else
+		local_freeary(ns, ipcp);
+}
+void local_freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
+#else
+static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
+#endif
 {
 	struct sem_undo *un, *tu;
 	struct sem_queue *q, *tq;
 	struct sem_array *sma = container_of(ipcp, struct sem_array, sem_perm);
 	int i;
 	DEFINE_WAKE_Q(wake_q);
-
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(&sem_ids(ns)))
+		BUG_ON(!list_empty(&sma->list_id));
+#endif
 	/* Free the existing undo structures for this semaphore set.  */
 #ifdef CONFIG_HCC_IPC
 	assert_mutex_locked(&sma->sem_perm.mutex);
@@ -1261,6 +1275,24 @@ static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 		unlink_queue(sma, q);
 		wake_up_sem_queue_prepare(q, -EIDRM, &wake_q);
 	}
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry_safe(q, tq, &sma->remote_pending_const, list) {
+		list_del(&q->list);
+
+		if (q->undo)
+			kfree(q->undo);
+
+		free_semqueue(q);
+	}
+	list_for_each_entry_safe(q, tq, &sma->remote_pending_alter, list) {
+		list_del(&q->list);
+
+		if (q->undo)
+			kfree(q->undo);
+
+		free_semqueue(q);
+	}
+#endif
 	for (i = 0; i < sma->sem_nsems; i++) {
 		struct sem *sem = &sma->sems[i];
 		list_for_each_entry_safe(q, tq, &sem->pending_const, list) {
@@ -1271,11 +1303,33 @@ static void freeary(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 			unlink_queue(sma, q);
 			wake_up_sem_queue_prepare(q, -EIDRM, &wake_q);
 		}
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry_safe(q, tq, &sma->remote_pending_const, list) {
+		list_del(&q->list);
+
+		if (q->undo)
+			kfree(q->undo);
+
+		free_semqueue(q);
+	}
+	list_for_each_entry_safe(q, tq, &sma->remote_pending_alter, list) {
+		list_del(&q->list);
+
+		if (q->undo)
+			kfree(q->undo);
+
+		free_semqueue(q);
+	}
+#endif
 	}
 
 	/* Remove the semaphore set from the IDR */
 	sem_rmid(ns, sma);
+#ifdef CONFIG_HCC_IPC
+	local_sem_unlock(sma);
+#else
 	sem_unlock(sma, -1);
+#endif
 	rcu_read_unlock();
 
 	wake_up_q(&wake_q);
