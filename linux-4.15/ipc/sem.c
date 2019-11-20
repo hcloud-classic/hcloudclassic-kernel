@@ -16,7 +16,7 @@
  * Further wakeup optimizations, documentation
  * (c) 2010 Manfred Spraul <manfred@colorfullife.com>
  *
- * support for audit of ipc object properties and permission changes
+ * support for audit of ipc object properties and pe rmission changes
  * Dustin Kirkland <dustin.kirkland@us.ibm.com>
  *
  * namespaces support
@@ -950,8 +950,22 @@ static int update_queue(struct sem_array *sma, int semnum, struct wake_q_head *w
 		pending_list = &sma->pending_alter;
 	else
 		pending_list = &sma->sems[semnum].pending_alter;
+#ifdef CONFIG_HCC_IPC
 
+	int remote = 0, loop = 0;
+	if (sma->sem_perm.hccops)
+	{
+		remote = get_random_int() % 2;
+		loop = 1;
+	}
+#endif
 again:
+#ifdef CONFIG_HCC_IPC
+	if (remote)
+		q = list_entry(sma->remote_pending.next, struct sem_queue, list);
+	else
+	{
+#endif
 	list_for_each_entry_safe(q, tmp, pending_list, list) {
 		int error, restart;
 
@@ -985,6 +999,54 @@ again:
 		if (restart)
 			goto again;
 	}
+	#ifdef CONFIG_HCC_IPC
+	}
+	while ((!remote && &q->list != &sma->sem_pending) || (remote && &q->list != &sma->remote_pending))
+	{
+		error = try_atomic_semop(sma, q->sops, q->nsops,
+								 q->undo, q->pid);
+
+		if (error <= 0)
+		{
+			struct sem_queue *n;
+			if (q->alter)
+			{
+				list_del(&q->list);
+				if (remote)
+					n = list_entry(sma->remote_pending.next,
+								   struct sem_queue, list);
+				else
+					n = list_entry(sma->sem_pending.next,
+								   struct sem_queue, list);
+			}
+			else
+			{
+				n = list_entry(q->list.next, struct sem_queue,
+							   list);
+				list_del(&q->list);
+			}
+
+			q->status = IN_WAKEUP;
+			if (remote)
+				hcc_ipc_sem_wakeup_process(q, error);
+			else
+				wake_up_process(q->sleeper);
+			smp_wmb();
+			q->status = error;
+			q = n;
+		}
+		else
+		{
+			q = list_entry(q->list.next, struct sem_queue, list);
+		}
+	}
+	if (loop)
+	{
+		remote = !remote;
+		loop = 0;
+		goto again;
+	}
+#endif
 	return semop_completed;
 }
 
@@ -1101,23 +1163,44 @@ static int count_semcnt(struct sem_array *sma, ushort semnum,
 			bool count_zero)
 {
 	struct list_head *l;
+#ifdef CONFIG_HCC_IPC
+	struct list_head *inno_l;
+#endif
 	struct sem_queue *q;
 	int semcnt;
 
 	semcnt = 0;
 	/* First: check the simple operations. They are easy to evaluate */
 	if (count_zero)
+#ifdef CONFIG_HCC_IPC
+	{
+#endif
 		l = &sma->sems[semnum].pending_const;
+#ifdef CONFIG_HCC_IPC
+		inno_l = &sma->sems[semnum].remote_pending_const;
+	}
+#endif
 	else
+#ifdef CONFIG_HCC_IPC
+	{
+#endif
 		l = &sma->sems[semnum].pending_alter;
-
+#ifdef CONFIG_HCC_IPC
+		inno_l = &sma->sems[semnum].remote_pending_alter;
+	}
+#endif
 	list_for_each_entry(q, l, list) {
 		/* all task on a per-semaphore list sleep on exactly
 		 * that semaphore
 		 */
 		semcnt++;
 	}
-
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry(q, &sma->pending_alter, list)
+	{
+		semcnt += check_qop(sma, semnum, q, count_zero);
+	}
+#endif
 	/* Then: check the complex operations. */
 	list_for_each_entry(q, &sma->pending_alter, list) {
 		semcnt += check_qop(sma, semnum, q, count_zero);
@@ -1127,6 +1210,17 @@ static int count_semcnt(struct sem_array *sma, ushort semnum,
 			semcnt += check_qop(sma, semnum, q, count_zero);
 		}
 	}
+#ifdef CONFIG_HCC_IPC
+	list_for_each_entry(q, &sma->remote_pending_const, list)
+	{
+		struct sembuf *sops = q->sops;
+		int nsops = q->nsops;
+		int i;
+		for (i = 0; i < nsops; i++)
+			if (sops[i].sem_num == semnum && (sops[i].sem_op < 0) && !(sops[i].sem_flg & IPC_NOWAIT))
+				semncnt++;
+	}
+#endif
 	return semcnt;
 }
 
