@@ -64,3 +64,37 @@ static void delete_local_msq(struct ipc_namespace *ns, struct msg_queue *local_m
 
 	ipc_rcu_putref(msq);
 }
+static void update_local_msq (struct msg_queue *local_msq,
+			      struct msg_queue *received_msq)
+{
+	/* local_msq->q_perm = received_msq->q_perm;*/
+	local_msq->q_stime = received_msq->q_stime;
+	local_msq->q_rtime = received_msq->q_rtime;
+	local_msq->q_ctime = received_msq->q_ctime;
+	local_msq->q_cbytes = received_msq->q_cbytes;
+	local_msq->q_qnum = received_msq->q_qnum;
+	local_msq->q_qbytes = received_msq->q_qbytes;
+	local_msq->q_lspid = received_msq->q_lspid;
+	local_msq->q_lrpid = received_msq->q_lrpid;
+
+	/* Do not modify the list_head else you will loose
+	   information on master node */
+}
+
+
+int msq_alloc_object (struct master_obj * obj_entry,
+		      struct master_set * set,
+		      objid_t objid)
+{
+	msq_object_t *msq_object;
+
+	msq_object = kmem_cache_alloc(msq_object_cachep, GFP_KERNEL);
+	if (!msq_object)
+		return -ENOMEM;
+
+	msq_object->local_msq = NULL;
+	obj_entry->object = msq_object;
+
+	return 0;
+}
+
