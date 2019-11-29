@@ -68,7 +68,9 @@ struct msg_sender {
 #define SEARCH_LESSEQUAL	4
 #define SEARCH_NUMBER		5
 
+#ifndef CONFIG_HCC_IPC
 #define msg_ids(ns)	((ns)->ids[IPC_MSG_IDS])
+#endif
 
 static inline struct msg_queue *msq_obtain_object(struct ipc_namespace *ns, int id)
 {
@@ -112,7 +114,10 @@ static void msg_rcu_free(struct rcu_head *head)
  *
  * Called with msg_ids.rwsem held (writer)
  */
-static int newque(struct ipc_namespace *ns, struct ipc_params *params)
+#ifndef CONFIG_HCC_IPC
+static
+#endif
+int newque(struct ipc_namespace *ns, struct ipc_params *params)
 {
 	struct msg_queue *msq;
 	int retval;
@@ -143,12 +148,30 @@ static int newque(struct ipc_namespace *ns, struct ipc_params *params)
 	INIT_LIST_HEAD(&msq->q_senders);
 
 	/* ipc_addid() locks msq upon success. */
+#ifdef CONFIG_HCC_IPC
+	retval = ipc_addid(&msg_ids(ns), &msq->q_perm, ns->msg_ctlmni,
+		       params->requested_id);
+#else
 	retval = ipc_addid(&msg_ids(ns), &msq->q_perm, ns->msg_ctlmni);
+#endif
 	if (retval < 0) {
 		call_rcu(&msq->q_perm.rcu, msg_rcu_free);
 		return retval;
 	}
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(&msg_ids(ns))) {
+		retval = hcc_ipc_msg_newque(ns, msq) ;
+		if (retval) {
+			/* release locks held by ipc_addid */
+			local_ipc_unlock(&msq->q_perm);
 
+			security_msg_queue_free(msq);
+			ipc_rcu_putref(msq);
+			return retval;
+		}
+	} else
+		msq->q_perm.hccops = NULL;
+#endif
 	ipc_unlock_object(&msq->q_perm);
 	rcu_read_unlock();
 
