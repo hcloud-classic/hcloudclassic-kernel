@@ -2552,7 +2552,11 @@ int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
  * The current implementation does not do so. The POSIX standard
  * and SVID should be consulted to determine what behavior is mandated.
  */
+#ifdef CONFIG_HCC_IPC
+void __exit_sem(struct task_struct *tsk)
+#else
 void exit_sem(struct task_struct *tsk)
+#endif
 {
 	struct sem_undo_list *ulp;
 
@@ -2564,7 +2568,8 @@ void exit_sem(struct task_struct *tsk)
 	if (!refcount_dec_and_test(&ulp->refcnt))
 		return;
 
-	for (;;) {
+	for (;;)
+	{
 		struct sem_array *sma;
 		struct sem_undo *un;
 		int semid, i;
@@ -2574,8 +2579,9 @@ void exit_sem(struct task_struct *tsk)
 
 		rcu_read_lock();
 		un = list_entry_rcu(ulp->list_proc.next,
-				    struct sem_undo, list_proc);
-		if (&un->list_proc == &ulp->list_proc) {
+							struct sem_undo, list_proc);
+		if (&un->list_proc == &ulp->list_proc)
+		{
 			/*
 			 * We must wait for freeary() before freeing this ulp,
 			 * in case we raced with last sem_undo. There is a small
@@ -2592,27 +2598,39 @@ void exit_sem(struct task_struct *tsk)
 		spin_unlock(&ulp->lock);
 
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (semid == -1) {
+		if (semid == -1)
+		{
 			rcu_read_unlock();
 			continue;
 		}
-
+#ifdef CONFIG_HCC_IPC
+		down_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 		sma = sem_obtain_object_check(tsk->nsproxy->ipc_ns, semid);
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (IS_ERR(sma)) {
+		if (IS_ERR(sma))
+		{
+#ifdef CONFIG_HCC_IPC
+			up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 			rcu_read_unlock();
 			continue;
 		}
 
 		sem_lock(sma, NULL, -1);
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (!ipc_valid_object(&sma->sem_perm)) {
+		if (!ipc_valid_object(&sma->sem_perm))
+		{
 			sem_unlock(sma, -1);
 			rcu_read_unlock();
 			continue;
 		}
 		un = __lookup_undo(ulp, semid);
-		if (un == NULL) {
+		if (un == NULL)
+		{
+#ifdef CONFIG_HCC_IPC
+			up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 			/* exit_sem raced with IPC_RMID+semget() that created
 			 * exactly the same semid. Nothing to do.
 			 */
@@ -2620,9 +2638,12 @@ void exit_sem(struct task_struct *tsk)
 			rcu_read_unlock();
 			continue;
 		}
-
+#ifdef CONFIG_HCC_IPC
+		assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 		/* remove un from the linked lists */
 		ipc_assert_locked_object(&sma->sem_perm);
+#endif
 		list_del(&un->list_id);
 
 		/* we are the last process using this ulp, acquiring ulp->lock
@@ -2632,9 +2653,11 @@ void exit_sem(struct task_struct *tsk)
 		list_del_rcu(&un->list_proc);
 
 		/* perform adjustments registered in un */
-		for (i = 0; i < sma->sem_nsems; i++) {
+		for (i = 0; i < sma->sem_nsems; i++)
+		{
 			struct sem *semaphore = &sma->sems[i];
-			if (un->semadj[i]) {
+			if (un->semadj[i])
+			{
 				semaphore->semval += un->semadj[i];
 				/*
 				 * Range checks of the new semaphore value,
@@ -2659,6 +2682,9 @@ void exit_sem(struct task_struct *tsk)
 		/* maybe some queued-up processes were waiting for this */
 		do_smart_update(sma, NULL, 0, 1, &wake_q);
 		sem_unlock(sma, -1);
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif		
 		rcu_read_unlock();
 		wake_up_q(&wake_q);
 
