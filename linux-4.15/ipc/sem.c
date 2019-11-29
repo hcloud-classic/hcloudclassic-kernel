@@ -2089,35 +2089,54 @@ static struct sem_undo *find_alloc_undo(struct ipc_namespace *ns, int semid)
 	/* step 1: figure out the size of the semaphore array */
 	sma = sem_obtain_object_check(ns, semid);
 	if (IS_ERR(sma)) {
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(ns).rw_mutex);
+#endif
 		rcu_read_unlock();
 		return ERR_CAST(sma);
 	}
 
 	nsems = sma->sem_nsems;
-	if (!ipc_rcu_getref(&sma->sem_perm)) {
+#ifndef CONFIG_HCC_IPC
+	if (!ipc_rcu_getref(&sma->sem_perm))
+	{
 		rcu_read_unlock();
 		un = ERR_PTR(-EIDRM);
 		goto out;
 	}
+#endif
+
 	rcu_read_unlock();
 
 	/* step 2: allocate new undo structure */
 	new = kzalloc(sizeof(struct sem_undo) + sizeof(short)*nsems, GFP_KERNEL);
 	if (!new) {
+#ifdef CONFIG_HCC_IPC
+		sem_unlock(sma);
+		up_read(&sem_ids(ns).rw_mutex);
+#else
 		ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
+#endif
 		return ERR_PTR(-ENOMEM);
 	}
 
 	/* step 3: Acquire the lock on semaphore array */
 	rcu_read_lock();
+#ifdef CONFIG_HCC_IPC
+	BUG_ON(sma->sem_perm.deleted);
+#else
+	/* step 3: Acquire the lock on semaphore array */
+	rcu_read_lock();
 	sem_lock_and_putref(sma);
-	if (!ipc_valid_object(&sma->sem_perm)) {
+	if (!ipc_valid_object(&sma->sem_perm))
+	{
 		sem_unlock(sma, -1);
 		rcu_read_unlock();
 		kfree(new);
 		un = ERR_PTR(-EIDRM);
 		goto out;
 	}
+#endif
 	spin_lock(&ulp->lock);
 
 	/*
@@ -2134,13 +2153,20 @@ static struct sem_undo *find_alloc_undo(struct ipc_namespace *ns, int semid)
 	new->semid = semid;
 	assert_spin_locked(&ulp->lock);
 	list_add_rcu(&new->list_proc, &ulp->list_proc);
+#ifdef CONFIG_HCC_IPC
+	assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 	ipc_assert_locked_object(&sma->sem_perm);
+#endif
 	list_add(&new->list_id, &sma->list_id);
 	un = new;
 
 success:
 	spin_unlock(&ulp->lock);
 	sem_unlock(sma, -1);
+#ifdef CONFIG_HCC_IPC
+	up_read(&sem_ids(ns).rw_mutex);
+#endif
 out:
 	return un;
 }
@@ -2207,7 +2233,11 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 			dup |= mask;
 		}
 	}
-
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(&sem_ids(ns)))
+		un = NULL;
+	else
+#endif
 	if (undos) {
 		/* On success, find_alloc_undo takes the rcu_read_lock */
 		un = find_alloc_undo(ns, semid);
@@ -2219,11 +2249,16 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		un = NULL;
 		rcu_read_lock();
 	}
-
+#ifdef CONFIG_HCC_IPC
+	down_read(&sem_ids(ns).rw_mutex);
+#endif
 	sma = sem_obtain_object_check(ns, semid);
 	if (IS_ERR(sma)) {
 		rcu_read_unlock();
 		error = PTR_ERR(sma);
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(ns).rw_mutex);
+#endif
 		goto out_free;
 	}
 
@@ -2247,6 +2282,15 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 
 	error = -EIDRM;
 	locknum = sem_lock(sma, sops, nsops);
+#ifdef CONFIG_HCC_IPC
+	if (undos && sma->sem_perm.hccops) {
+		un = hcc_ipc_sem_find_undo(sma);
+		if (IS_ERR(un)) {
+			error = PTR_ERR(un);
+			goto out_unlock_free;
+		}
+	}
+#endif
 	/*
 	 * We eventually might perform the following check in a lockless
 	 * fashion, considering ipc_valid_object() locking constraints.
@@ -2273,7 +2317,10 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 	queue.pid = task_tgid_vnr(current);
 	queue.alter = alter;
 	queue.dupsop = dupsop;
-
+#ifdef CONFIG_HCC_IPC
+	queue.semid = sma->sem_perm.id;
+	queue.node = hcc_node_id;
+#endif
 	error = perform_atomic_semop(sma, &queue);
 	if (error == 0) { /* non-blocking succesfull path */
 		DEFINE_WAKE_Q(wake_q);
@@ -2289,6 +2336,9 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 
 		sem_unlock(sma, locknum);
 		rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(ns).rw_mutex);
+#endif
 		wake_up_q(&wake_q);
 
 		goto out_free;
@@ -2335,7 +2385,9 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		__set_current_state(TASK_INTERRUPTIBLE);
 		sem_unlock(sma, locknum);
 		rcu_read_unlock();
-
+#ifdef CONFIG_HCC_IPC
+	down_read(&sem_ids(ns).rw_mutex);
+#endif
 		if (timeout)
 			jiffies_left = schedule_timeout(jiffies_left);
 		else
@@ -2363,7 +2415,9 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 			smp_mb();
 			goto out_free;
 		}
-
+#ifdef CONFIG_HCC_IPC
+	down_read(&sem_ids(ns).rw_mutex);
+#endif
 		rcu_read_lock();
 		locknum = sem_lock(sma, sops, nsops);
 
@@ -2378,7 +2432,17 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		 */
 		if (error != -EINTR)
 			goto out_unlock_free;
-
+#if defined(CONFIG_HCC_IPC)
+	if (hcc_action_any_pending(current)) {
+#ifdef CONFIG_HCC_DEBUG
+		printk("%s:%d - action HCC! --> need replay!!\n",
+		       __PRETTY_FUNCTION__, __LINE__);
+#endif
+		list_del(&queue.list);
+		error = -ERESTARTSYS;
+		goto out_unlock_free;
+	}
+#endif
 		/*
 		 * If an interrupt occurred we have to clean up the queue.
 		 */
@@ -2389,6 +2453,9 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 	unlink_queue(sma, &queue);
 
 out_unlock_free:
+#ifdef CONFIG_HCC_IPC
+	up_read(&sem_ids(ns).rw_mutex);
+#endif
 	sem_unlock(sma, locknum);
 	rcu_read_unlock();
 out_free:
@@ -2434,11 +2501,33 @@ SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
  * parent and child tasks.
  */
 
+#ifdef CONFIG_HCC_IPC
+int __copy_semundo(unsigned long clone_flags, struct task_struct *tsk);
+
 int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+{
+	struct ipc_namespace *ns;
+
+	ns = task_nsproxy(tsk)->ipc_ns;
+
+	if (is_hcc_ipc(&sem_ids(ns)))
+		return hcc_ipc_sem_copy_semundo(clone_flags, tsk);
+
+	return __copy_semundo(clone_flags, tsk);
+}
+
+int __copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+#else
+int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+#endif
 {
 	struct sem_undo_list *undo_list;
 	int error;
-
+#ifdef CONFIG_HCC_IPC
+	BUG_ON((clone_flags & CLONE_SYSVSEM)
+	       && current->sysvsem.undo_list_id != UNIQUE_ID_NONE);
+	tsk->sysvsem.undo_list_id = UNIQUE_ID_NONE;
+#endif
 	if (clone_flags & CLONE_SYSVSEM) {
 		error = get_undo_list(&undo_list);
 		if (error)
@@ -2463,7 +2552,11 @@ int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
  * The current implementation does not do so. The POSIX standard
  * and SVID should be consulted to determine what behavior is mandated.
  */
+#ifdef CONFIG_HCC_IPC
+void __exit_sem(struct task_struct *tsk)
+#else
 void exit_sem(struct task_struct *tsk)
+#endif
 {
 	struct sem_undo_list *ulp;
 
@@ -2475,7 +2568,8 @@ void exit_sem(struct task_struct *tsk)
 	if (!refcount_dec_and_test(&ulp->refcnt))
 		return;
 
-	for (;;) {
+	for (;;)
+	{
 		struct sem_array *sma;
 		struct sem_undo *un;
 		int semid, i;
@@ -2485,8 +2579,9 @@ void exit_sem(struct task_struct *tsk)
 
 		rcu_read_lock();
 		un = list_entry_rcu(ulp->list_proc.next,
-				    struct sem_undo, list_proc);
-		if (&un->list_proc == &ulp->list_proc) {
+							struct sem_undo, list_proc);
+		if (&un->list_proc == &ulp->list_proc)
+		{
 			/*
 			 * We must wait for freeary() before freeing this ulp,
 			 * in case we raced with last sem_undo. There is a small
@@ -2503,27 +2598,39 @@ void exit_sem(struct task_struct *tsk)
 		spin_unlock(&ulp->lock);
 
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (semid == -1) {
+		if (semid == -1)
+		{
 			rcu_read_unlock();
 			continue;
 		}
-
+#ifdef CONFIG_HCC_IPC
+		down_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 		sma = sem_obtain_object_check(tsk->nsproxy->ipc_ns, semid);
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (IS_ERR(sma)) {
+		if (IS_ERR(sma))
+		{
+#ifdef CONFIG_HCC_IPC
+			up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 			rcu_read_unlock();
 			continue;
 		}
 
 		sem_lock(sma, NULL, -1);
 		/* exit_sem raced with IPC_RMID, nothing to do */
-		if (!ipc_valid_object(&sma->sem_perm)) {
+		if (!ipc_valid_object(&sma->sem_perm))
+		{
 			sem_unlock(sma, -1);
 			rcu_read_unlock();
 			continue;
 		}
 		un = __lookup_undo(ulp, semid);
-		if (un == NULL) {
+		if (un == NULL)
+		{
+#ifdef CONFIG_HCC_IPC
+			up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif
 			/* exit_sem raced with IPC_RMID+semget() that created
 			 * exactly the same semid. Nothing to do.
 			 */
@@ -2531,9 +2638,12 @@ void exit_sem(struct task_struct *tsk)
 			rcu_read_unlock();
 			continue;
 		}
-
+#ifdef CONFIG_HCC_IPC
+		assert_mutex_locked(&sma->sem_perm.mutex);
+#else
 		/* remove un from the linked lists */
 		ipc_assert_locked_object(&sma->sem_perm);
+#endif
 		list_del(&un->list_id);
 
 		/* we are the last process using this ulp, acquiring ulp->lock
@@ -2543,9 +2653,11 @@ void exit_sem(struct task_struct *tsk)
 		list_del_rcu(&un->list_proc);
 
 		/* perform adjustments registered in un */
-		for (i = 0; i < sma->sem_nsems; i++) {
+		for (i = 0; i < sma->sem_nsems; i++)
+		{
 			struct sem *semaphore = &sma->sems[i];
-			if (un->semadj[i]) {
+			if (un->semadj[i])
+			{
 				semaphore->semval += un->semadj[i];
 				/*
 				 * Range checks of the new semaphore value,
@@ -2570,6 +2682,9 @@ void exit_sem(struct task_struct *tsk)
 		/* maybe some queued-up processes were waiting for this */
 		do_smart_update(sma, NULL, 0, 1, &wake_q);
 		sem_unlock(sma, -1);
+#ifdef CONFIG_HCC_IPC
+		up_read(&sem_ids(tsk->nsproxy->ipc_ns).rw_mutex);
+#endif		
 		rcu_read_unlock();
 		wake_up_q(&wake_q);
 
