@@ -2432,7 +2432,17 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		 */
 		if (error != -EINTR)
 			goto out_unlock_free;
-
+#if defined(CONFIG_HCC_IPC)
+	if (hcc_action_any_pending(current)) {
+#ifdef CONFIG_HCC_DEBUG
+		printk("%s:%d - action HCC! --> need replay!!\n",
+		       __PRETTY_FUNCTION__, __LINE__);
+#endif
+		list_del(&queue.list);
+		error = -ERESTARTSYS;
+		goto out_unlock_free;
+	}
+#endif
 		/*
 		 * If an interrupt occurred we have to clean up the queue.
 		 */
@@ -2443,6 +2453,9 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 	unlink_queue(sma, &queue);
 
 out_unlock_free:
+#ifdef CONFIG_HCC_IPC
+	up_read(&sem_ids(ns).rw_mutex);
+#endif
 	sem_unlock(sma, locknum);
 	rcu_read_unlock();
 out_free:
@@ -2488,11 +2501,33 @@ SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
  * parent and child tasks.
  */
 
+#ifdef CONFIG_HCC_IPC
+int __copy_semundo(unsigned long clone_flags, struct task_struct *tsk);
+
 int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+{
+	struct ipc_namespace *ns;
+
+	ns = task_nsproxy(tsk)->ipc_ns;
+
+	if (is_hcc_ipc(&sem_ids(ns)))
+		return hcc_ipc_sem_copy_semundo(clone_flags, tsk);
+
+	return __copy_semundo(clone_flags, tsk);
+}
+
+int __copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+#else
+int copy_semundo(unsigned long clone_flags, struct task_struct *tsk)
+#endif
 {
 	struct sem_undo_list *undo_list;
 	int error;
-
+#ifdef CONFIG_HCC_IPC
+	BUG_ON((clone_flags & CLONE_SYSVSEM)
+	       && current->sysvsem.undo_list_id != UNIQUE_ID_NONE);
+	tsk->sysvsem.undo_list_id = UNIQUE_ID_NONE;
+#endif
 	if (clone_flags & CLONE_SYSVSEM) {
 		error = get_undo_list(&undo_list);
 		if (error)
