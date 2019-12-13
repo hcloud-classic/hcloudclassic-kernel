@@ -101,6 +101,8 @@ struct rpc_desc* rpc_begin_m(enum rpcid rpcid,
 	struct rpc_desc* desc;
 	int i;
 
+    printk(KERN_INFO "HCC: rpc_begin_m - start");
+
 	desc = rpc_desc_alloc();
 	if(!desc)
 		goto oom;
@@ -127,6 +129,8 @@ struct rpc_desc* rpc_begin_m(enum rpcid rpcid,
 		goto oom_free_desc_recv;
 
 	desc->state = RPC_STATE_RUN;
+
+    printk(KERN_INFO "HCC: rpc_begin_m - end");
 
 	return desc;
 

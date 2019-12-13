@@ -2,16 +2,17 @@
  *  Copyright (C) 2019 Innogrid
  */
 
-/*  writen by cgs 2019 */
+/* writen by cgs 2019 */
 
-#ifndef __RPC_INTERNAL__
-#define __RPC_INTERNAL__
+#ifndef __GRPC_INTERNAL__
+#define __GRPC_INTERNAL__
 
 #include <linux/uio.h>
 #include <hcc/sys/types.h>
-#include <net/hccgrpc/rpc.h>
 #include <linux/radix-tree.h>
-
+#include <net/hccgrpc/rpc.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
 
 #define __RPC_HEADER_FLAGS_SIGNAL    (1<<0)
 #define __RPC_HEADER_FLAGS_SIGACK    (1<<1)
@@ -60,7 +61,6 @@ extern struct kmem_cache* __rpc_synchro_cachep;
 extern unsigned long rpc_mask[RPCID_MAX/(sizeof(unsigned long)*8)+1];
 extern spinlock_t waiting_desc_lock;
 extern struct list_head waiting_desc;
-
 extern struct list_head list_synchro_head;
 
 extern unsigned long rpc_link_send_seq_id[HCC_MAX_NODES];
@@ -100,6 +100,9 @@ void __rpc_get_raw_data(void *raw);
 
 void __rpc_synchro_free(struct rpc_desc *desc);
 int rpc_synchro_lookup(struct rpc_desc* desc);
+
+int comlayer_init(void);
+int rpclayer_init(void);
 
 struct __rpc_synchro_tree {
     spinlock_t lock;
@@ -181,15 +184,6 @@ extern unsigned long rpc_desc_done_id[HCC_MAX_NODES];
 
 extern spinlock_t rpc_desc_done_lock[HCC_MAX_NODES];
 
-int rpc_pack(struct rpc_desc* desc, int flags, const void* data, size_t size);
-enum rpc_error rpc_unpack(struct rpc_desc* desc, int flags, void* data, size_t size);
-enum rpc_error rpc_unpack_from(struct rpc_desc* desc, kerrighed_node_t node,
-			       int flags, void* data, size_t size);
-int rpc_end(struct rpc_desc *rpc_desc, int flags);
-#define rpc_pack_type(desc, v) rpc_pack(desc, 0, &v, sizeof(v))
-#define rpc_unpack_type(desc, v) rpc_unpack(desc, 0, &v, sizeof(v))
-#define rpc_unpack_type_from(desc, n, v) rpc_unpack_from(desc, n, 0, &v, sizeof(v))
-
 static inline
 int __rpc_synchro_get(struct __rpc_synchro *__rpc_synchro){
     return !atomic_inc_not_zero(&__rpc_synchro->usage);
@@ -231,8 +225,3 @@ void __rpc_synchro_put(struct __rpc_synchro *__rpc_synchro)
                         __rpc_synchro);
     }
 }
-
-
-
-
-#endif

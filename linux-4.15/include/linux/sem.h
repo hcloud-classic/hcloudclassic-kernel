@@ -41,8 +41,10 @@ struct sem_array {
 						/* that alter the array */
 	struct list_head	pending_const;	/* pending complex operations */
 						/* that do not alter semvals */
-#ifdef CONFIG_
+#ifdef CONFIG_IPC
 	struct list_head    remote_pending_alter /* Pending for remote sem operation */
+#endif
+
 	struct list_head	list_id;	/* undo requests on this array */
 	int			sem_nsems;	/* no. of semaphores in array */
 	int			complex_count;	/* pending complex operations */

@@ -1500,6 +1500,10 @@ static int __init ip_auto_config(void)
 	ic_proto_used = ic_got_reply | (ic_proto_enabled & IC_USE_DHCP);
 #endif
 
+#ifdef CONFIG_HCC
+	printk(KERN_INFO "HCC: ip_auto_config");
+#endif
+
 #ifndef IPCONFIG_SILENT
 	/*
 	 * Clue in the operator.

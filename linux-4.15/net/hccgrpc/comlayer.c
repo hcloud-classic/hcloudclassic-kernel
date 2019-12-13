@@ -967,7 +967,7 @@ static inline int handle_one_packet(hcc_node_t node,
 
     err = tipc_handler_ordered(buf, data, size);
     if (!err) {
-        if (node == HCC_NODE_ID) // kerrighed_node_id
+        if (node == HCC_NODE_ID)
             rpc_link_send_ack_id[node] = rpc_link_recv_seq_id[node];
         rpc_link_recv_seq_id[node]++;
     }
@@ -1073,7 +1073,7 @@ int comlayer_init(void) {
 
     lockdep_off();
 
-    tipc_net_start(net, tipc_addr(1, 1, HCC_NODE_ID+1)); // tipc_addr(1, 1, kerrighed_node_id+1)
+    tipc_net_start(net, tipc_addr(1, 1, HCC_NODE_ID+1));
 
     res = sock_create_kern(net, AF_TIPC, SOCK_SEQPACKET, 0, &sk);
     if (res)
@@ -1084,7 +1084,7 @@ int comlayer_init(void) {
         return res;
 
     tipc_seq.type = TIPC_HCC_SERVER_TYPE;
-    tipc_seq.lower = tipc_seq.upper = HCC_NODE_ID; // kerrighed_node_id
+    tipc_seq.lower = tipc_seq.upper = HCC_NODE_ID;
     res = __tipc_sk_publish(sk, TIPC_CLUSTER_SCOPE, &tipc_seq);
     if (res)
         return res;

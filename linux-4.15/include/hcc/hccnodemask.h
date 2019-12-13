@@ -199,13 +199,6 @@ static inline int __next_hccnode(int n, const hccnodemask_t *srcp)
 
 #define hccnodes_addr(src) ((src).bits)
 
-#define hccnodemask_scnprintf(buf, len, src) \
-			__hccnodemask_scnprintf((buf), (len), &(src), HCC_MAX_NODES)
-static inline int __hccnodemask_scnprintf(char *buf, int len,
-                                          const hccnodemask_t *srcp, int nbits)
-{
-    return bitmap_scnprintf(buf, len, srcp->bits, nbits);
-}
 
 #define hccnodemask_parse_user(ubuf, ulen, dst) \
 			__hccnodemask_parse_user((ubuf), (ulen), &(dst), HCC_MAX_NODES)
@@ -213,14 +206,6 @@ static inline int __hccnodemask_parse_user(const char __user *buf, int len,
         hccnodemask_t *dstp, int nbits)
 {
 return bitmap_parse_user(buf, len, dstp->bits, nbits);
-}
-
-#define hccnodelist_scnprintf(buf, len, src) \
-			__hccnodelist_scnprintf((buf), (len), &(src), HCC_MAX_NODES)
-static inline int __hccnodelist_scnprintf(char *buf, int len,
-                                          const hccnodemask_t *srcp, int nbits)
-{
-    return bitmap_scnlistprintf(buf, len, srcp->bits, nbits);
 }
 
 #define hccnodelist_parse(buf, dst) __hccnodelist_parse((buf), &(dst), HCC_MAX_NODES)

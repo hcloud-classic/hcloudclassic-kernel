@@ -8,5 +8,6 @@
 #define __HCCINIT_H__
 
 int init_proc(void);
+int init_rpc(void);
 
 #endif
