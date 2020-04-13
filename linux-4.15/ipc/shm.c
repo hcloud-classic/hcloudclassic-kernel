@@ -59,7 +59,7 @@ struct shm_file_data {
 };
 
 #define shm_file_data(file) (*((struct shm_file_data **)&(file)->private_data))
-
+#endif
 static const struct file_operations shm_file_operations;
 #ifndef CONFIG_HCC_IPC
 static const
@@ -152,8 +152,10 @@ static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, i
 
 	return container_of(ipcp, struct shmid_kernel, shm_perm);
 }
-
-static inline struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace *ns, int id)
+#ifndef CONFIG_HCC_IPC
+static inline
+#endif
+struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace *ns, int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_obtain_object_check(&shm_ids(ns), id);
 
@@ -167,7 +169,10 @@ static inline struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace 
  * shm_lock_(check_) routines are called in the paths where the rwsem
  * is not necessarily held.
  */
-static inline struct shmid_kernel *shm_lock(struct ipc_namespace *ns, int id)
+#ifndef CONFIG_HCC_IPC
+static inline
+#endif
+struct shmid_kernel *shm_lock(struct ipc_namespace *ns, int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_lock(&shm_ids(ns), id);
 
@@ -209,7 +214,9 @@ static int __shm_open(struct vm_area_struct *vma)
 	struct file *file = vma->vm_file;
 	struct shm_file_data *sfd = shm_file_data(file);
 	struct shmid_kernel *shp;
-
+#ifdef CONFIG_HCC_IPC
+	down_read(&shm_ids(sfd->ns).rw_mutex);
+#endif
 	shp = shm_lock(sfd->ns, sfd->id);
 
 	if (IS_ERR(shp))
@@ -219,6 +226,9 @@ static int __shm_open(struct vm_area_struct *vma)
 	shp->shm_lprid = task_tgid_vnr(current);
 	shp->shm_nattch++;
 	shm_unlock(shp);
+#ifdef CONFIG_HCC_IPC
+	up_read(&shm_ids(sfd->ns).rw_mutex);
+#endif
 	return 0;
 }
 
