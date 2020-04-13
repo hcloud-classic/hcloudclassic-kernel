@@ -45,9 +45,12 @@
 #include <linux/ipc_namespace.h>
 
 #include <linux/uaccess.h>
-
+#ifdef CONFIG_HCC_IPC
+#include "hccshm.h"
+#endif
 #include "util.h"
 
+#ifndef CONFIG_HCC_IPC
 struct shm_file_data {
 	int id;
 	struct ipc_namespace *ns;
@@ -58,14 +61,19 @@ struct shm_file_data {
 #define shm_file_data(file) (*((struct shm_file_data **)&(file)->private_data))
 
 static const struct file_operations shm_file_operations;
-static const struct vm_operations_struct shm_vm_ops;
+#ifndef CONFIG_HCC_IPC
+static const
+#endif
+struct vm_operations_struct shm_vm_ops;
 
 #define shm_ids(ns)	((ns)->ids[IPC_SHM_IDS])
 
 #define shm_unlock(shp)			\
 	ipc_unlock(&(shp)->shm_perm)
 
+#ifndef CONFIG_HCC_IPC
 static int newseg(struct ipc_namespace *, struct ipc_params *);
+#endif
 static void shm_open(struct vm_area_struct *vma);
 static void shm_close(struct vm_area_struct *vma);
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp);
@@ -93,7 +101,11 @@ static void do_shm_rmid(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 
 	shp = container_of(ipcp, struct shmid_kernel, shm_perm);
 
-	if (shp->shm_nattch) {
+#ifdef CONFIG_HCC_IPC
+		if (is_hcc_ipc(&shm_ids(ns))
+		    && shp->shm_perm.key != IPC_PRIVATE)
+			hcc_ipc_shm_rmkey(ns, shp->shm_perm.key);
+#endif
 		shp->shm_perm.mode |= SHM_DEST;
 		/* Do not find it any more */
 		ipc_set_key_private(&shm_ids(ns), &shp->shm_perm);
