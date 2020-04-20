@@ -45,9 +45,12 @@
 #include <linux/ipc_namespace.h>
 
 #include <linux/uaccess.h>
-
+#ifdef CONFIG_HCC_IPC
+#include "hccshm.h"
+#endif
 #include "util.h"
 
+#ifndef CONFIG_HCC_IPC
 struct shm_file_data {
 	int id;
 	struct ipc_namespace *ns;
@@ -56,16 +59,21 @@ struct shm_file_data {
 };
 
 #define shm_file_data(file) (*((struct shm_file_data **)&(file)->private_data))
-
+#endif
 static const struct file_operations shm_file_operations;
-static const struct vm_operations_struct shm_vm_ops;
+#ifndef CONFIG_HCC_IPC
+static const
+#endif
+struct vm_operations_struct shm_vm_ops;
 
 #define shm_ids(ns)	((ns)->ids[IPC_SHM_IDS])
 
 #define shm_unlock(shp)			\
 	ipc_unlock(&(shp)->shm_perm)
 
+#ifndef CONFIG_HCC_IPC
 static int newseg(struct ipc_namespace *, struct ipc_params *);
+#endif
 static void shm_open(struct vm_area_struct *vma);
 static void shm_close(struct vm_area_struct *vma);
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp);
@@ -93,7 +101,11 @@ static void do_shm_rmid(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp)
 
 	shp = container_of(ipcp, struct shmid_kernel, shm_perm);
 
-	if (shp->shm_nattch) {
+#ifdef CONFIG_HCC_IPC
+		if (is_hcc_ipc(&shm_ids(ns))
+		    && shp->shm_perm.key != IPC_PRIVATE)
+			hcc_ipc_shm_rmkey(ns, shp->shm_perm.key);
+#endif
 		shp->shm_perm.mode |= SHM_DEST;
 		/* Do not find it any more */
 		ipc_set_key_private(&shm_ids(ns), &shp->shm_perm);
@@ -140,8 +152,10 @@ static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, i
 
 	return container_of(ipcp, struct shmid_kernel, shm_perm);
 }
-
-static inline struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace *ns, int id)
+#ifndef CONFIG_HCC_IPC
+static inline
+#endif
+struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace *ns, int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_obtain_object_check(&shm_ids(ns), id);
 
@@ -155,7 +169,10 @@ static inline struct shmid_kernel *shm_obtain_object_check(struct ipc_namespace 
  * shm_lock_(check_) routines are called in the paths where the rwsem
  * is not necessarily held.
  */
-static inline struct shmid_kernel *shm_lock(struct ipc_namespace *ns, int id)
+#ifndef CONFIG_HCC_IPC
+static inline
+#endif
+struct shmid_kernel *shm_lock(struct ipc_namespace *ns, int id)
 {
 	struct kern_ipc_perm *ipcp = ipc_lock(&shm_ids(ns), id);
 
@@ -197,7 +214,9 @@ static int __shm_open(struct vm_area_struct *vma)
 	struct file *file = vma->vm_file;
 	struct shm_file_data *sfd = shm_file_data(file);
 	struct shmid_kernel *shp;
-
+#ifdef CONFIG_HCC_IPC
+	down_read(&shm_ids(sfd->ns).rw_mutex);
+#endif
 	shp = shm_lock(sfd->ns, sfd->id);
 
 	if (IS_ERR(shp))
@@ -207,6 +226,9 @@ static int __shm_open(struct vm_area_struct *vma)
 	shp->shm_lprid = task_tgid_vnr(current);
 	shp->shm_nattch++;
 	shm_unlock(shp);
+#ifdef CONFIG_HCC_IPC
+	up_read(&shm_ids(sfd->ns).rw_mutex);
+#endif
 	return 0;
 }
 
@@ -230,7 +252,11 @@ static void shm_open(struct vm_area_struct *vma)
  * It has to be called with shp and shm_ids.rwsem (writer) locked,
  * but returns with shp unlocked and freed.
  */
+#ifdef CONFIG_HCC_IPC
+void local_shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+#else
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+#endif
 {
 	struct file *shm_file;
 
@@ -238,7 +264,11 @@ static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 	shp->shm_file = NULL;
 	ns->shm_tot -= (shp->shm_segsz + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	shm_rmid(ns, shp);
+#ifdef CONFIG_HCC_IPC
+	local_shm_unlock(shp);
+#else
 	shm_unlock(shp);
+#endif
 	if (!is_file_hugepages(shm_file))
 		shmem_lock(shm_file, 0, shp->mlock_user);
 	else if (shp->mlock_user)
