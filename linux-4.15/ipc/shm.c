@@ -252,7 +252,11 @@ static void shm_open(struct vm_area_struct *vma)
  * It has to be called with shp and shm_ids.rwsem (writer) locked,
  * but returns with shp unlocked and freed.
  */
+#ifdef CONFIG_HCC_IPC
+void local_shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+#else
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+#endif
 {
 	struct file *shm_file;
 
@@ -260,7 +264,11 @@ static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 	shp->shm_file = NULL;
 	ns->shm_tot -= (shp->shm_segsz + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	shm_rmid(ns, shp);
+#ifdef CONFIG_HCC_IPC
+	local_shm_unlock(shp);
+#else
 	shm_unlock(shp);
+#endif
 	if (!is_file_hugepages(shm_file))
 		shmem_lock(shm_file, 0, shp->mlock_user);
 	else if (shp->mlock_user)
