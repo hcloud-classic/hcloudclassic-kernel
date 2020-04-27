@@ -546,6 +546,34 @@ void hcc_ipc_sem_exit_sem(struct ipc_namespace *ns,
 
 }
 
+void hcc_ipc_shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+{
+	struct kddm_set *mm_set;
+	int index;
+	key_t key;
+
+	index = ipcid_to_idx(shp->shm_perm.id);
+	key = shp->shm_perm.key;
+
+	mm_set = shp->shm_file->f_dentry->d_inode->i_mapping->kddm_set;
+
+	if (key != IPC_PRIVATE) {
+		_grab_object_no_ft(shm_ids(ns).hccops->key_set, key);
+		_remove_frozen_object(shm_ids(ns).hccops->key_set, key);
+	}
+
+	local_shm_unlock(shp);
+
+	_remove_frozen_object(shm_ids(ns).hccops->data_set, index);
+	_destroy_set(mm_set);
+
+	hcc_ipc_rmid(&shm_ids(ns), index);
+}
+
+
+
+
+
 /*****************************************************************************/
 /*                                                                           */
 /*                              INITIALIZATION                               */
