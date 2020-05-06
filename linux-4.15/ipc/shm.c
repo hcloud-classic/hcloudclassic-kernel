@@ -278,6 +278,17 @@ static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 	ipc_rcu_putref(&shp->shm_perm, shm_rcu_free);
 }
 
+
+#ifdef CONFIG_HCC_IPC
+static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
+{
+	if (is_hcc_ipc(&shm_ids(ns)))
+		hcc_ipc_shm_destroy(ns, shp);
+	else
+		local_shm_destroy(ns, shp);
+}
+#endif
+
 /*
  * shm_may_destroy - identifies whether shm segment should be destroyed now
  *
@@ -415,6 +426,24 @@ static int shm_fault(struct vm_fault *vmf)
 
 	return sfd->vm_ops->fault(vmf);
 }
+
+
+#ifdef CONFIG_HCC_IPC
+static struct page *shm_wppage (struct vm_area_struct *vma,
+				unsigned long address,
+				struct page *old_page)
+{
+	struct file *file = vma->vm_file;
+	struct shm_file_data *sfd = shm_file_data(file);
+
+	if (sfd->vm_ops->wppage)
+		return sfd->vm_ops->wppage(vma, address, old_page);
+	else
+		return ERR_PTR(EPERM);
+}
+#endif
+
+
 
 #ifdef CONFIG_NUMA
 static int shm_set_policy(struct vm_area_struct *vma, struct mempolicy *new)
