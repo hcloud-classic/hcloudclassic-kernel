@@ -7,6 +7,44 @@
 
 #include "shm_handler.h"
 
+
+static struct kern_ipc_perm *hcb_ipc_shm_lock(struct ipc_ids *ids, int id)
+{
+	shmid_object_t *shp_object;
+	struct shmid_kernel *shp;
+	int index;
+
+	rcu_read_lock();
+
+	index = ipcid_to_idx(id);
+
+	shp_object = _gdm_grab_object_no_ft(ids->hccops->data_gdm_set, index);
+
+	if (!shp_object)
+		goto error;
+
+	shp = shp_object->local_shp;
+
+	BUG_ON(!shp);
+
+	mutex_lock(&shp->shm_perm.mutex);
+
+	if (shp->shm_perm.deleted) {
+		mutex_unlock(&shp->shm_perm.mutex);
+		goto error;
+	}
+
+	return &(shp->shm_perm);
+
+error:
+	_gdm_put_object(ids->hccops->data_gdm_set, index);
+	rcu_read_unlock();
+
+	return ERR_PTR(-EINVAL);
+}
+
+
+
 static void hcb_ipc_shm_unlock(struct kern_ipc_perm *ipcp)
 {
 	int index, deleted = 0;
