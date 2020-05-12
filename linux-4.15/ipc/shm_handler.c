@@ -7,6 +7,24 @@
 
 #include "shm_handler.h"
 
+static struct kern_ipc_perm *hcb_ipc_shm_findkey(struct ipc_ids *ids, key_t key)
+{
+	long *key_index;
+	int id = -1;
+
+	key_index = _gdm_get_object_no_ft(ids->hccops->key_gdm_set, key);
+
+	if (key_index)
+		id = *key_index;
+
+	_gdm_put_object(ids->hccops->key_gdm_set, key);
+
+	if (id != -1)
+		return hcb_ipc_shm_lock(ids, id);
+
+	return NULL;
+}
+
 
 int hcc_ipc_shm_newseg (struct ipc_namespace *ns, struct shmid_kernel *shp)
 {
