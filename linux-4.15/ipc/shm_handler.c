@@ -208,6 +208,25 @@ int hcc_shm_init_ns(struct ipc_namespace *ns)
 		goto err_key;
 	}
 
+	shm_ops->data_gdm_set = create_new_gdm_set(gdm_def_ns,
+						     SHMID_GDMID,
+						     SHMID_LINKER,
+						     GDMRR_DEF_OWNER,
+						     sizeof(shmid_object_t),
+						     GDMLOCAL_EXCLUSIVE);
+	if (IS_ERR(shm_ops->data_gdm_set)) {
+		r = PTR_ERR(shm_ops->data_gdm_set);
+		goto err_data;
+	}
+
+	shm_ops->ipc_lock = kcb_ipc_shm_lock;
+	shm_ops->ipc_unlock = kcb_ipc_shm_unlock;
+	shm_ops->ipc_findkey = kcb_ipc_shm_findkey;
+
+	shm_ids(ns).hccops = shm_ops;
+
+	return 0;
+
 
 err_data:
 	_destroy_gdm_set(shm_ops->key_gdm_set);
