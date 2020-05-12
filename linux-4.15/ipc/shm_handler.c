@@ -4,9 +4,14 @@
 #include <linux/ipc_namespace.h>
 #include <linux/shm.h>
 #include <linux/msg.h>
-
+#include <gdm/gdm.h>
+#include <hcloud/hotplug.h>
+#include "hccshm.h"
+#include "ipc_handler.h"
 #include "shm_handler.h"
-
+#include "shmid_io_linker.h"
+#include "ipcmap_io_linker.h"
+#include "shm_memory_linker.h"
 
 static struct kern_ipc_perm *hcb_ipc_shm_lock(struct ipc_ids *ids, int id)
 {
@@ -167,4 +172,49 @@ void hcc_ipc_shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 	_destroy_hcc_set(mm_set);
 
 	hcc_ipc_rmid(&shm_ids(ns), index);
+}
+
+
+int hcc_shm_init_ns(struct ipc_namespace *ns)
+{
+	int r;
+
+	struct hccipc_ops *shm_ops = kmalloc(sizeof(struct hccipc_ops),
+					     GFP_KERNEL);
+	if (!shm_ops) {
+		r = -ENOMEM;
+		goto err;
+	}
+
+	shm_ops->map_gdm_set = create_new_gdm_set(gdm_def_ns,
+						    SHMMAP_GDMID,
+						    IPCMAP_LINKER,
+						    GDMRR_DEF_OWNER,
+						    sizeof(ipcmap_object_t),
+						    GDMLOCAL_EXCLUSIVE);
+	if (IS_ERR(shm_ops->map_gdm_set)) {
+		r = PTR_ERR(shm_ops->map_gdm_set);
+		goto err_map;
+	}
+
+	shm_ops->key_gdm_set = create_new_gdm_set(gdm_def_ns,
+						    SHMKEY_GDMID,
+						    SHMKEY_LINKER,
+						    GDMRR_DEF_OWNER,
+						    sizeof(long),
+						    GDMLOCAL_EXCLUSIVE);
+	if (IS_ERR(shm_ops->key_gdm_set)) {
+		r = PTR_ERR(shm_ops->key_gdm_set);
+		goto err_key;
+	}
+
+
+err_data:
+	_destroy_gdm_set(shm_ops->key_gdm_set);
+err_key:
+	_destroy_gdm_set(shm_ops->map_gdm_set);
+err_map:
+	kfree(shm_ops);
+err:
+	return r;
 }
