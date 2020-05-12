@@ -7,6 +7,23 @@
 
 #include "shm_handler.h"
 
+static void hcb_ipc_shm_unlock(struct kern_ipc_perm *ipcp)
+{
+	int index, deleted = 0;
+
+	index = ipcid_to_idx(ipcp->id);
+
+	if (ipcp->deleted)
+		deleted = 1;
+
+	_gdm_put_object(ipcp->hccops->data_gdm_set, index);
+
+	if (!deleted)
+		mutex_unlock(&ipcp->mutex);
+
+	rcu_read_unlock();
+}
+
 static struct kern_ipc_perm *hcb_ipc_shm_findkey(struct ipc_ids *ids, key_t key)
 {
 	long *key_index;
