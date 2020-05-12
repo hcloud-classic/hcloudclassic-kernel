@@ -237,3 +237,17 @@ err_map:
 err:
 	return r;
 }
+
+
+
+void hcc_shm_exit_ns(struct ipc_namespace *ns)
+{
+	if (shm_ids(ns).hccops) {
+
+		_destroy_gdm_set(shm_ids(ns).hccops->data_gdm_set);
+		_destroy_gdm_set(shm_ids(ns).hccops->key_gdm_set);
+		_destroy_gdm_set(shm_ids(ns).hccops->map_gdm_set);
+
+		kfree(shm_ids(ns).hccops);
+	}
+}
