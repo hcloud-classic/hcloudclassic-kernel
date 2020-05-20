@@ -251,3 +251,22 @@ void hcc_shm_exit_ns(struct ipc_namespace *ns)
 		kfree(shm_ids(ns).hccops);
 	}
 }
+void shm_handler_init(void)
+{
+	shmid_object_cachep = kmem_cache_create("shmid_object",
+						sizeof(shmid_object_t),
+						0, SLAB_PANIC, NULL);
+
+	register_io_linker(SHM_MEMORY_LINKER, &shm_memory_linker);
+	register_io_linker(SHMID_LINKER, &shmid_linker);
+	register_io_linker(SHMKEY_LINKER, &shmkey_linker);
+
+	krgsyms_register(HCCSYMS_VM_OPS_SHM, &shm_vm_ops);
+
+	printk("Shm Server configured\n");
+}
+
+void shm_handler_finalize (void)
+{
+}
+#endif
