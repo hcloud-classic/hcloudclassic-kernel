@@ -119,3 +119,37 @@ int shmid_insert_object (struct gdm_obj * obj_entry,
 done:
 	return r;
 }
+
+int shmid_invalidate_object (struct gdm_obj * obj_entry,
+			     struct gdm_set * set,
+			     objid_t objid)
+{
+	return KDDM_IO_KEEP_OBJECT;
+}
+
+
+int shmid_remove_object (void *object,
+			 struct gdm_set * set,
+			 objid_t objid)
+{
+	shmid_object_t *shp_object;
+	struct shmid_kernel *shp;
+
+	shp_object = object;
+
+	if (shp_object) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		shp = shp_object->local_shp;
+		local_shm_lock(ns, shp->shm_perm.id);
+		local_shm_destroy(ns, shp);
+		kmem_cache_free(shmid_object_cachep, shp_object);
+
+		put_ipc_ns(ns);
+	}
+
+	return 0;
+}
