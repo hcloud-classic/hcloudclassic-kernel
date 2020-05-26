@@ -69,3 +69,87 @@ err_putref:
 	return ERR_PTR(retval);
 }
 
+
+
+
+int shmid_alloc_object (struct gdm_obj * obj_entry,
+			struct gdm_set * set,
+			objid_t objid)
+{
+	shmid_object_t *shp_object;
+
+	shp_object = kmem_cache_alloc (shmid_object_cachep, GFP_KERNEL);
+	if (!shp_object)
+		return -ENOMEM;
+
+	shp_object->local_shp = NULL;
+	obj_entry->object = shp_object;
+
+	return 0;
+}
+
+
+int shmid_insert_object (struct gdm_obj * obj_entry,
+			 struct gdm_set * set,
+			 objid_t objid)
+{
+	shmid_object_t *shp_object;
+	struct shmid_kernel *shp;
+	struct ipc_namespace *ns;
+	int r = 0;
+
+	shp_object = obj_entry->object;
+	BUG_ON(!shp_object);
+
+	if (shp_object->local_shp)
+		goto done;
+
+	ns = find_get_hcc_ipcns();
+	BUG_ON(!ns);
+
+	shp = create_local_shp(ns, &shp_object->mobile_shp, shp_object->set_id);
+	shp_object->local_shp = shp;
+
+	if (IS_ERR(shp)) {
+		r = PTR_ERR(shp);
+		BUG();
+	}
+
+	put_ipc_ns(ns);
+done:
+	return r;
+}
+
+int shmid_invalidate_object (struct gdm_obj * obj_entry,
+			     struct gdm_set * set,
+			     objid_t objid)
+{
+	return KDDM_IO_KEEP_OBJECT;
+}
+
+
+int shmid_remove_object (void *object,
+			 struct gdm_set * set,
+			 objid_t objid)
+{
+	shmid_object_t *shp_object;
+	struct shmid_kernel *shp;
+
+	shp_object = object;
+
+	if (shp_object) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		shp = shp_object->local_shp;
+		local_shm_lock(ns, shp->shm_perm.id);
+		local_shm_destroy(ns, shp);
+		kmem_cache_free(shmid_object_cachep, shp_object);
+
+		put_ipc_ns(ns);
+	}
+
+	return 0;
+}
