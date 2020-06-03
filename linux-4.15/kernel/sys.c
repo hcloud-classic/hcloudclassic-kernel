@@ -346,14 +346,14 @@ SYSCALL_DEFINE2(setregid, gid_t, rgid, gid_t, egid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
-	kgid_t krgid, kegid;
+	kgid_t hccid, hcgid;
 
-	krgid = make_kgid(ns, rgid);
-	kegid = make_kgid(ns, egid);
+	hccid = mahc_kgid(ns, rgid);
+	hcgid = mahc_kgid(ns, egid);
 
-	if ((rgid != (gid_t) -1) && !gid_valid(krgid))
+	if ((rgid != (gid_t) -1) && !gid_valid(hccid))
 		return -EINVAL;
-	if ((egid != (gid_t) -1) && !gid_valid(kegid))
+	if ((egid != (gid_t) -1) && !gid_valid(hcgid))
 		return -EINVAL;
 
 	new = prepare_creds();
@@ -363,25 +363,25 @@ SYSCALL_DEFINE2(setregid, gid_t, rgid, gid_t, egid)
 
 	retval = -EPERM;
 	if (rgid != (gid_t) -1) {
-		if (gid_eq(old->gid, krgid) ||
-		    gid_eq(old->egid, krgid) ||
+		if (gid_eq(old->gid, hccid) ||
+		    gid_eq(old->egid, hccid) ||
 		    ns_capable(old->user_ns, CAP_SETGID))
-			new->gid = krgid;
+			new->gid = hccid;
 		else
 			goto error;
 	}
 	if (egid != (gid_t) -1) {
-		if (gid_eq(old->gid, kegid) ||
-		    gid_eq(old->egid, kegid) ||
-		    gid_eq(old->sgid, kegid) ||
+		if (gid_eq(old->gid, hcgid) ||
+		    gid_eq(old->egid, hcgid) ||
+		    gid_eq(old->sgid, hcgid) ||
 		    ns_capable(old->user_ns, CAP_SETGID))
-			new->egid = kegid;
+			new->egid = hcgid;
 		else
 			goto error;
 	}
 
 	if (rgid != (gid_t) -1 ||
-	    (egid != (gid_t) -1 && !gid_eq(kegid, old->gid)))
+	    (egid != (gid_t) -1 && !gid_eq(hcgid, old->gid)))
 		new->sgid = new->egid;
 	new->fsgid = new->egid;
 
@@ -479,14 +479,14 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
-	kuid_t kruid, keuid;
+	kuid_t hcuid, hccuid;
 
-	kruid = make_kuid(ns, ruid);
-	keuid = make_kuid(ns, euid);
+	hcuid = make_kuid(ns, ruid);
+	hccuid = make_kuid(ns, euid);
 
-	if ((ruid != (uid_t) -1) && !uid_valid(kruid))
+	if ((ruid != (uid_t) -1) && !uid_valid(hcuid))
 		return -EINVAL;
-	if ((euid != (uid_t) -1) && !uid_valid(keuid))
+	if ((euid != (uid_t) -1) && !uid_valid(hccuid))
 		return -EINVAL;
 
 	new = prepare_creds();
@@ -496,18 +496,18 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 
 	retval = -EPERM;
 	if (ruid != (uid_t) -1) {
-		new->uid = kruid;
-		if (!uid_eq(old->uid, kruid) &&
-		    !uid_eq(old->euid, kruid) &&
+		new->uid = hcuid;
+		if (!uid_eq(old->uid, hcuid) &&
+		    !uid_eq(old->euid, hcuid) &&
 		    !ns_capable(old->user_ns, CAP_SETUID))
 			goto error;
 	}
 
 	if (euid != (uid_t) -1) {
-		new->euid = keuid;
-		if (!uid_eq(old->uid, keuid) &&
-		    !uid_eq(old->euid, keuid) &&
-		    !uid_eq(old->suid, keuid) &&
+		new->euid = hccuid;
+		if (!uid_eq(old->uid, hccuid) &&
+		    !uid_eq(old->euid, hccuid) &&
+		    !uid_eq(old->suid, hccuid) &&
 		    !ns_capable(old->user_ns, CAP_SETUID))
 			goto error;
 	}
@@ -518,7 +518,7 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 			goto error;
 	}
 	if (ruid != (uid_t) -1 ||
-	    (euid != (uid_t) -1 && !uid_eq(keuid, old->uid)))
+	    (euid != (uid_t) -1 && !uid_eq(hccuid, old->uid)))
 		new->suid = new->euid;
 	new->fsuid = new->euid;
 
@@ -597,16 +597,16 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
-	kuid_t kruid, keuid, ksuid;
+	kuid_t hcuid, hccuid, ksuid;
 
-	kruid = make_kuid(ns, ruid);
-	keuid = make_kuid(ns, euid);
+	hcuid = make_kuid(ns, ruid);
+	hccuid = make_kuid(ns, euid);
 	ksuid = make_kuid(ns, suid);
 
-	if ((ruid != (uid_t) -1) && !uid_valid(kruid))
+	if ((ruid != (uid_t) -1) && !uid_valid(hcuid))
 		return -EINVAL;
 
-	if ((euid != (uid_t) -1) && !uid_valid(keuid))
+	if ((euid != (uid_t) -1) && !uid_valid(hccuid))
 		return -EINVAL;
 
 	if ((suid != (uid_t) -1) && !uid_valid(ksuid))
@@ -620,11 +620,11 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 
 	retval = -EPERM;
 	if (!ns_capable(old->user_ns, CAP_SETUID)) {
-		if (ruid != (uid_t) -1        && !uid_eq(kruid, old->uid) &&
-		    !uid_eq(kruid, old->euid) && !uid_eq(kruid, old->suid))
+		if (ruid != (uid_t) -1        && !uid_eq(hcuid, old->uid) &&
+		    !uid_eq(hcuid, old->euid) && !uid_eq(hcuid, old->suid))
 			goto error;
-		if (euid != (uid_t) -1        && !uid_eq(keuid, old->uid) &&
-		    !uid_eq(keuid, old->euid) && !uid_eq(keuid, old->suid))
+		if (euid != (uid_t) -1        && !uid_eq(hccuid, old->uid) &&
+		    !uid_eq(hccuid, old->euid) && !uid_eq(hccuid, old->suid))
 			goto error;
 		if (suid != (uid_t) -1        && !uid_eq(ksuid, old->uid) &&
 		    !uid_eq(ksuid, old->euid) && !uid_eq(ksuid, old->suid))
@@ -632,15 +632,15 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	}
 
 	if (ruid != (uid_t) -1) {
-		new->uid = kruid;
-		if (!uid_eq(kruid, old->uid)) {
+		new->uid = hcuid;
+		if (!uid_eq(hcuid, old->uid)) {
 			retval = set_user(new);
 			if (retval < 0)
 				goto error;
 		}
 	}
 	if (euid != (uid_t) -1)
-		new->euid = keuid;
+		new->euid = hccuid;
 	if (suid != (uid_t) -1)
 		new->suid = ksuid;
 	new->fsuid = new->euid;
@@ -684,13 +684,13 @@ SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
-	kgid_t krgid, kegid, ksgid;
+	kgid_t hccid, kegid, ksgid;
 
-	krgid = make_kgid(ns, rgid);
+	hccid = make_kgid(ns, rgid);
 	kegid = make_kgid(ns, egid);
 	ksgid = make_kgid(ns, sgid);
 
-	if ((rgid != (gid_t) -1) && !gid_valid(krgid))
+	if ((rgid != (gid_t) -1) && !gid_valid(hccid))
 		return -EINVAL;
 	if ((egid != (gid_t) -1) && !gid_valid(kegid))
 		return -EINVAL;
@@ -704,8 +704,8 @@ SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 
 	retval = -EPERM;
 	if (!ns_capable(old->user_ns, CAP_SETGID)) {
-		if (rgid != (gid_t) -1        && !gid_eq(krgid, old->gid) &&
-		    !gid_eq(krgid, old->egid) && !gid_eq(krgid, old->sgid))
+		if (rgid != (gid_t) -1        && !gid_eq(hccid, old->gid) &&
+		    !gid_eq(hccid, old->egid) && !gid_eq(hccid, old->sgid))
 			goto error;
 		if (egid != (gid_t) -1        && !gid_eq(kegid, old->gid) &&
 		    !gid_eq(kegid, old->egid) && !gid_eq(kegid, old->sgid))
@@ -716,7 +716,7 @@ SYSCALL_DEFINE3(setresgid, gid_t, rgid, gid_t, egid, gid_t, sgid)
 	}
 
 	if (rgid != (gid_t) -1)
-		new->gid = krgid;
+		new->gid = hccid;
 	if (egid != (gid_t) -1)
 		new->egid = kegid;
 	if (sgid != (gid_t) -1)

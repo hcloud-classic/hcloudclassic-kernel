@@ -124,7 +124,7 @@ int shmid_invalidate_object (struct gdm_obj * obj_entry,
 			     struct gdm_set * set,
 			     objid_t objid)
 {
-	return KDDM_IO_KEEP_OBJECT;
+	return GDM_IO_KEEP_OBJECT;
 }
 
 
@@ -153,3 +153,60 @@ int shmid_remove_object (void *object,
 
 	return 0;
 }
+
+int shmid_export_object (struct rpc_desc *desc,
+			 struct gdm_set *set,
+			 struct gdm_obj *obj_entry,
+			 objid_t objid,
+			 int flags)
+{
+	shmid_object_t *shp_object;
+
+	shp_object = obj_entry->object;
+	shp_object->mobile_shp = *shp_object->local_shp;
+
+	rpc_pack(desc, 0, shp_object, sizeof(shmid_object_t));
+	return 0;
+}
+
+int shmid_import_object (struct rpc_desc *desc,
+			 struct gdm_set *set,
+			 struct gdm_obj *obj_entry,
+			 objid_t objid,
+			 int flags)
+{
+	shmid_object_t *shp_object, buffer;
+	struct shmid_kernel *shp;
+
+	shp_object = obj_entry->object;
+	rpc_unpack(desc, 0, &buffer, sizeof(shmid_object_t));
+
+	shp_object->mobile_shp = buffer.mobile_shp;
+	shp_object->set_id = buffer.set_id;
+
+	if (shp_object->local_shp) {
+		shp = shp_object->local_shp;
+		shp->shm_nattch = shp_object->mobile_shp.shm_nattch;
+		shp->shm_perm.mode = shp_object->mobile_shp.shm_perm.mode;
+	}
+
+	return 0;
+}
+
+struct iolinker_struct shmid_linker = {
+	first_touch:       shmid_first_touch,
+	remove_object:     shmid_remove_object,
+	invalidate_object: shmid_invalidate_object,
+	insert_object:     shmid_insert_object,
+	linker_name:       "shmid",
+	linker_id:         SHMID_LINKER,
+	alloc_object:      shmid_alloc_object,
+	export_object:     shmid_export_object,
+	import_object:     shmid_import_object
+};
+
+struct iolinker_struct shmkey_linker = {
+	linker_name:       "shmkey",
+	linker_id:         SHMKEY_LINKER,
+};
+
