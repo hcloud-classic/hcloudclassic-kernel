@@ -482,6 +482,10 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 	 * In case of remap_file_pages() emulation, the file can represent
 	 * removed IPC ID: propogate shm_lock() error to caller.
 	 */
+
+#ifdef CONFIG_HCC_IPC
+	sfd->file->private_data = sfd;
+#endif
 	ret = __shm_open(vma);
 	if (ret)
 		return ret;
@@ -538,7 +542,10 @@ static unsigned long shm_get_unmapped_area(struct file *file,
 						pgoff, flags);
 }
 
-static const struct file_operations shm_file_operations = {
+#ifndef CONFIG_HCC_IPC
+static
+#endif
+const struct file_operations shm_file_operations = {
 	.mmap		= shm_mmap,
 	.fsync		= shm_fsync,
 	.release	= shm_release,
@@ -565,7 +572,10 @@ bool is_file_shm_hugepages(struct file *file)
 	return file->f_op == &shm_file_operations_huge;
 }
 
-static const struct vm_operations_struct shm_vm_ops = {
+#ifndef CONFIG_HCC_IPC
+static const
+#endif
+struct vm_operations_struct shm_vm_ops = {
 	.open	= shm_open,	/* callback for a new vm-area open */
 	.close	= shm_close,	/* callback for when the vm-area is released */
 	.fault	= shm_fault,
@@ -582,7 +592,10 @@ static const struct vm_operations_struct shm_vm_ops = {
  *
  * Called with shm_ids.rwsem held as a writer.
  */
-static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
+#ifndef CONFIG_HCC_IPC
+static
+#endif
+int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 {
 	key_t key = params->key;
 	int shmflg = params->flg;
@@ -661,7 +674,12 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	shp->shm_creator = current;
 
 	/* ipc_addid() locks shp upon success. */
+#ifdef CONFIG_HCC_IPC
+	error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni,
+		       params->requested_id);
+#else
 	error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+#endif
 	if (error < 0)
 		goto no_id;
 
@@ -674,6 +692,14 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	file_inode(file)->i_ino = shp->shm_perm.id;
 
 	ns->shm_tot += numpages;
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(&shm_ids(ns))) {
+		error = hcc_ipc_shm_newseg(ns, shp) ;
+		if (error)
+			goto no_file;
+	} else
+		shp->shm_perm.hccops = NULL;
+#endif
 	error = shp->shm_perm.id;
 
 	ipc_unlock_object(&shp->shm_perm);
