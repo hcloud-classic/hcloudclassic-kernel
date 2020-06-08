@@ -996,20 +996,30 @@ static int shmctl_stat(struct ipc_namespace *ns, int shmid,
 	struct shmid_kernel *shp;
 	int result;
 	int err;
-
+#ifdef CONFIG_HCC_IPC
+		down_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_lock();
 	if (cmd == SHM_STAT) {
 		shp = shm_obtain_object(ns, shmid);
 		if (IS_ERR(shp)) {
 			err = PTR_ERR(shp);
-			goto out_unlock;
+#ifdef CONFIG_HCC_IPC
+				goto out_unlock_ns;
+#else
+				goto out_unlock;
+#endif
 		}
 		result = shp->shm_perm.id;
 	} else {
 		shp = shm_obtain_object_check(ns, shmid);
 		if (IS_ERR(shp)) {
 			err = PTR_ERR(shp);
+#ifdef CONFIG_HCC_IPC
+				goto out_unlock_ns;
+#else
 			goto out_unlock;
+#endif
 		}
 		result = 0;
 	}
@@ -1032,8 +1042,15 @@ static int shmctl_stat(struct ipc_namespace *ns, int shmid,
 	tbuf->shm_lpid	= shp->shm_lprid;
 	tbuf->shm_nattch = shp->shm_nattch;
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+		up_read(&shm_ids(ns).rw_mutex);
+#endif
 	return result;
 
+#ifdef CONFIG_HCC_IPC
+out_unlock_ns:
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 out_unlock:
 	rcu_read_unlock();
 	return err;
@@ -1412,11 +1429,18 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 	 * additional creator id...
 	 */
 	ns = current->nsproxy->ipc_ns;
+#ifdef CONFIG_HCC_IPC
+	down_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_lock();
 	shp = shm_obtain_object_check(ns, shmid);
 	if (IS_ERR(shp)) {
 		err = PTR_ERR(shp);
+#ifdef CONFIG_HCC_IPC
+		goto out_unlock_ns;
+#else
 		goto out_unlock;
+#endif
 	}
 
 	err = -EACCES;
@@ -1441,6 +1465,9 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 	shp->shm_nattch++;
 	size = i_size_read(d_inode(path.dentry));
 	ipc_unlock_object(&shp->shm_perm);
+#ifdef CONFIG_HCC_IPC
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_unlock();
 
 	err = -ENOMEM;
@@ -1512,6 +1539,10 @@ out_nattch:
 
 out_unlock:
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+out_unlock_ns:
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 out:
 	return err;
 }
