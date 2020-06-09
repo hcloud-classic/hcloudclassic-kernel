@@ -482,6 +482,10 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 	 * In case of remap_file_pages() emulation, the file can represent
 	 * removed IPC ID: propogate shm_lock() error to caller.
 	 */
+
+#ifdef CONFIG_HCC_IPC
+	sfd->file->private_data = sfd;
+#endif
 	ret = __shm_open(vma);
 	if (ret)
 		return ret;
@@ -538,7 +542,10 @@ static unsigned long shm_get_unmapped_area(struct file *file,
 						pgoff, flags);
 }
 
-static const struct file_operations shm_file_operations = {
+#ifndef CONFIG_HCC_IPC
+static
+#endif
+const struct file_operations shm_file_operations = {
 	.mmap		= shm_mmap,
 	.fsync		= shm_fsync,
 	.release	= shm_release,
@@ -565,7 +572,10 @@ bool is_file_shm_hugepages(struct file *file)
 	return file->f_op == &shm_file_operations_huge;
 }
 
-static const struct vm_operations_struct shm_vm_ops = {
+#ifndef CONFIG_HCC_IPC
+static const
+#endif
+struct vm_operations_struct shm_vm_ops = {
 	.open	= shm_open,	/* callback for a new vm-area open */
 	.close	= shm_close,	/* callback for when the vm-area is released */
 	.fault	= shm_fault,
@@ -582,7 +592,10 @@ static const struct vm_operations_struct shm_vm_ops = {
  *
  * Called with shm_ids.rwsem held as a writer.
  */
-static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
+#ifndef CONFIG_HCC_IPC
+static
+#endif
+int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 {
 	key_t key = params->key;
 	int shmflg = params->flg;
@@ -661,7 +674,12 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	shp->shm_creator = current;
 
 	/* ipc_addid() locks shp upon success. */
+#ifdef CONFIG_HCC_IPC
+	error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni,
+		       params->requested_id);
+#else
 	error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+#endif
 	if (error < 0)
 		goto no_id;
 
@@ -674,6 +692,14 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	file_inode(file)->i_ino = shp->shm_perm.id;
 
 	ns->shm_tot += numpages;
+#ifdef CONFIG_HCC_IPC
+	if (is_hcc_ipc(&shm_ids(ns))) {
+		error = hcc_ipc_shm_newseg(ns, shp) ;
+		if (error)
+			goto no_file;
+	} else
+		shp->shm_perm.hccops = NULL;
+#endif
 	error = shp->shm_perm.id;
 
 	ipc_unlock_object(&shp->shm_perm);
@@ -970,20 +996,30 @@ static int shmctl_stat(struct ipc_namespace *ns, int shmid,
 	struct shmid_kernel *shp;
 	int result;
 	int err;
-
+#ifdef CONFIG_HCC_IPC
+		down_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_lock();
 	if (cmd == SHM_STAT) {
 		shp = shm_obtain_object(ns, shmid);
 		if (IS_ERR(shp)) {
 			err = PTR_ERR(shp);
-			goto out_unlock;
+#ifdef CONFIG_HCC_IPC
+				goto out_unlock_ns;
+#else
+				goto out_unlock;
+#endif
 		}
 		result = shp->shm_perm.id;
 	} else {
 		shp = shm_obtain_object_check(ns, shmid);
 		if (IS_ERR(shp)) {
 			err = PTR_ERR(shp);
+#ifdef CONFIG_HCC_IPC
+				goto out_unlock_ns;
+#else
 			goto out_unlock;
+#endif
 		}
 		result = 0;
 	}
@@ -1006,8 +1042,15 @@ static int shmctl_stat(struct ipc_namespace *ns, int shmid,
 	tbuf->shm_lpid	= shp->shm_lprid;
 	tbuf->shm_nattch = shp->shm_nattch;
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+		up_read(&shm_ids(ns).rw_mutex);
+#endif
 	return result;
 
+#ifdef CONFIG_HCC_IPC
+out_unlock_ns:
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 out_unlock:
 	rcu_read_unlock();
 	return err;
@@ -1386,11 +1429,18 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 	 * additional creator id...
 	 */
 	ns = current->nsproxy->ipc_ns;
+#ifdef CONFIG_HCC_IPC
+	down_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_lock();
 	shp = shm_obtain_object_check(ns, shmid);
 	if (IS_ERR(shp)) {
 		err = PTR_ERR(shp);
+#ifdef CONFIG_HCC_IPC
+		goto out_unlock_ns;
+#else
 		goto out_unlock;
+#endif
 	}
 
 	err = -EACCES;
@@ -1415,6 +1465,9 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 	shp->shm_nattch++;
 	size = i_size_read(d_inode(path.dentry));
 	ipc_unlock_object(&shp->shm_perm);
+#ifdef CONFIG_HCC_IPC
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 	rcu_read_unlock();
 
 	err = -ENOMEM;
@@ -1486,6 +1539,10 @@ out_nattch:
 
 out_unlock:
 	rcu_read_unlock();
+#ifdef CONFIG_HCC_IPC
+out_unlock_ns:
+	up_read(&shm_ids(ns).rw_mutex);
+#endif
 out:
 	return err;
 }
