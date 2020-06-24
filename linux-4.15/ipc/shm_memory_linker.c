@@ -179,3 +179,36 @@ int shmem_memory_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	vmf->page = page;
 	return 0;
 }
+
+struct page *shmem_memory_wppage (struct vm_area_struct *vma,
+				  unsigned long address,
+				  struct page *old_page)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	struct page *page;
+	struct gdm_set *gdm;
+	objid_t objid;
+
+	BUG_ON(!vma);
+
+	gdm = inode->i_mapping->gdm_set;
+
+	BUG_ON(!gdm);
+	objid = vma->vm_pgoff + (address - vma->vm_start) / PAGE_SIZE;
+
+	page = gdm_grab_object (gdm_def_ns, gdm->id, objid);
+
+	if (!page->mapping)
+		page->mapping = inode->i_mapping;
+
+	map_gdm_page (vma, address, page, 1);
+
+	if (page != old_page) {
+		page_add_file_rmap(page);
+		page_cache_get(page);
+	}
+
+	gdm_put_object (gdm_def_ns, gdm->id, objid);
+
+	return page;
+}
