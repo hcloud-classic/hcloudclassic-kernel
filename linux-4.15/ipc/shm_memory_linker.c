@@ -115,3 +115,27 @@ int shm_memory_invalidate_page (struct gdm_obj * objEntry,
 
 	return 0;
 }
+int shm_memory_remove_page (void *object,
+			    struct gdm_set * set,
+			    objid_t objid)
+{
+	if (object)
+		page_cache_release ((struct page *) object);
+
+	return 0;
+}
+
+
+
+struct iolinker_struct shm_memory_linker = {
+	first_touch:       memory_first_touch,
+	remove_object:     shm_memory_remove_page,
+	invalidate_object: shm_memory_invalidate_page,
+	change_state:      memory_change_state,
+	insert_object:     shm_memory_insert_page,
+	linker_name:       "shm",
+	linker_id:         SHM_MEMORY_LINKER,
+	alloc_object:      memory_alloc_object,
+	export_object:     memory_export_object,
+	import_object:     memory_import_object
+};
