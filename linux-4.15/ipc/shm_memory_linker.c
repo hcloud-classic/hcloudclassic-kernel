@@ -139,3 +139,43 @@ struct iolinker_struct shm_memory_linker = {
 	export_object:     memory_export_object,
 	import_object:     memory_import_object
 };
+
+int shmem_memory_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	struct page *page;
+	struct gdm_set *gdm;
+	unsigned long address;
+	objid_t objid;
+	int write_access = vmf->flags & FAULT_FLAG_WRITE;
+
+	address = (unsigned long)(vmf->virtual_address) & PAGE_MASK;
+
+	gdm = inode->i_mapping->gdm_set;
+
+	BUG_ON(!gdm);
+	objid = vma->vm_pgoff + (address - vma->vm_start) / PAGE_SIZE;
+
+	if (write_access)
+		page = gdm_grab_object(gdm_def_ns, gdm->id, objid);
+	else
+		page = gdm_get_object(gdm_def_ns, gdm->id, objid);
+
+	page_cache_get(page);
+
+	if (!page->mapping) {
+		printk ("Hum... NULL mapping in shmem_memory_nopage\n");
+		page->mapping = inode->i_mapping;
+	}
+
+	map_gdm_page (vma, address, page, write_access);
+	ClearPageMigratable(page);
+
+	inc_mm_counter(vma->vm_mm, file_rss);
+	page_add_file_rmap(page);
+
+	gdm_put_object (gdm_def_ns, gdm->id, objid);
+
+	vmf->page = page;
+	return 0;
+}
