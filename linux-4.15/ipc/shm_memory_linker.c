@@ -115,3 +115,100 @@ int shm_memory_invalidate_page (struct gdm_obj * objEntry,
 
 	return 0;
 }
+int shm_memory_remove_page (void *object,
+			    struct gdm_set * set,
+			    objid_t objid)
+{
+	if (object)
+		page_cache_release ((struct page *) object);
+
+	return 0;
+}
+
+
+
+struct iolinker_struct shm_memory_linker = {
+	first_touch:       memory_first_touch,
+	remove_object:     shm_memory_remove_page,
+	invalidate_object: shm_memory_invalidate_page,
+	change_state:      memory_change_state,
+	insert_object:     shm_memory_insert_page,
+	linker_name:       "shm",
+	linker_id:         SHM_MEMORY_LINKER,
+	alloc_object:      memory_alloc_object,
+	export_object:     memory_export_object,
+	import_object:     memory_import_object
+};
+
+int shmem_memory_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	struct page *page;
+	struct gdm_set *gdm;
+	unsigned long address;
+	objid_t objid;
+	int write_access = vmf->flags & FAULT_FLAG_WRITE;
+
+	address = (unsigned long)(vmf->virtual_address) & PAGE_MASK;
+
+	gdm = inode->i_mapping->gdm_set;
+
+	BUG_ON(!gdm);
+	objid = vma->vm_pgoff + (address - vma->vm_start) / PAGE_SIZE;
+
+	if (write_access)
+		page = gdm_grab_object(gdm_def_ns, gdm->id, objid);
+	else
+		page = gdm_get_object(gdm_def_ns, gdm->id, objid);
+
+	page_cache_get(page);
+
+	if (!page->mapping) {
+		printk ("Hum... NULL mapping in shmem_memory_nopage\n");
+		page->mapping = inode->i_mapping;
+	}
+
+	map_gdm_page (vma, address, page, write_access);
+	ClearPageMigratable(page);
+
+	inc_mm_counter(vma->vm_mm, file_rss);
+	page_add_file_rmap(page);
+
+	gdm_put_object (gdm_def_ns, gdm->id, objid);
+
+	vmf->page = page;
+	return 0;
+}
+
+struct page *shmem_memory_wppage (struct vm_area_struct *vma,
+				  unsigned long address,
+				  struct page *old_page)
+{
+	struct inode *inode = vma->vm_file->f_dentry->d_inode;
+	struct page *page;
+	struct gdm_set *gdm;
+	objid_t objid;
+
+	BUG_ON(!vma);
+
+	gdm = inode->i_mapping->gdm_set;
+
+	BUG_ON(!gdm);
+	objid = vma->vm_pgoff + (address - vma->vm_start) / PAGE_SIZE;
+
+	page = gdm_grab_object (gdm_def_ns, gdm->id, objid);
+
+	if (!page->mapping)
+		page->mapping = inode->i_mapping;
+
+	map_gdm_page (vma, address, page, 1);
+
+	if (page != old_page) {
+		page_add_file_rmap(page);
+		page_cache_get(page);
+	}
+
+	gdm_put_object (gdm_def_ns, gdm->id, objid);
+
+	return page;
+}
