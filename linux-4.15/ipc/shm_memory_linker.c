@@ -212,3 +212,41 @@ struct page *shmem_memory_wppage (struct vm_area_struct *vma,
 
 	return page;
 }
+
+
+struct vm_operations_struct hcc_shmem_vm_ops = {
+	fault:	shmem_memory_fault,
+	wppage:	shmem_memory_wppage,
+};
+
+
+static int hcc_shmem_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct shm_file_data *sfd;
+
+	BUG_ON(!file->private_data); 
+
+	sfd = shm_file_data(file);
+#ifdef CONFIG_HCC_DEBUG
+	{
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		BUG_ON(sfd->ns != ns);
+
+		put_ipc_ns(ns);
+	}
+#endif
+        file_accessed(file);
+	vma->vm_ops = &hcc_shmem_vm_ops;
+	vma->vm_flags |= VM_GDM;
+
+	return 0;
+}
+
+
+struct file_operations hcc_shm_file_operations = {
+	.mmap = hcc_shmem_mmap,
+};
