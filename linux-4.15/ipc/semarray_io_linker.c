@@ -47,3 +47,43 @@ err_putref:
 	ipc_rcu_putref(sma);
 	return ERR_PTR(retval);
 }
+
+
+
+#define IN_WAKEUP 1
+
+static inline void update_sem_queues(struct sem_array *sma,
+				     struct sem_array *received_sma)
+{
+	struct sem_queue *q, *tq, *local_q;
+
+	BUG_ON(!list_empty(&received_sma->sem_pending));
+
+	list_for_each_entry_safe(q, tq, &received_sma->remote_sem_pending, list) {
+
+		int is_local = 0;
+
+		list_for_each_entry(local_q, &sma->sem_pending, list) {
+
+			if (task_pid_knr(local_q->sleeper) == remote_sleeper_pid(q)) {
+				is_local = 1;
+
+				BUG_ON(q->undo && !local_q->undo);
+				BUG_ON(local_q->undo && !q->undo);
+				local_q->undo = q->undo;
+				BUG_ON(q->status == IN_WAKEUP);
+				BUG_ON(local_q->status != q->status);
+
+				goto next;
+			}
+		}
+	next:
+		list_del(&q->list);
+		if (is_local)
+			free_semqueue(q);
+		else
+			list_add(&q->list, &sma->remote_sem_pending);
+	}
+
+	BUG_ON(!list_empty(&received_sma->remote_sem_pending));
+}
