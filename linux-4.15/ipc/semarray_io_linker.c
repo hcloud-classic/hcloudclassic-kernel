@@ -87,3 +87,95 @@ static inline void update_sem_queues(struct sem_array *sma,
 
 	BUG_ON(!list_empty(&received_sma->remote_sem_pending));
 }
+
+static void update_local_sem(struct sem_array *local_sma,
+			     struct sem_array *received_sma)
+{
+	int size_sems;
+
+	size_sems = local_sma->sem_nsems * sizeof (struct sem);
+
+	local_sma->sem_otime = received_sma->sem_otime;
+	local_sma->sem_ctime = received_sma->sem_ctime;
+	memcpy(local_sma->sem_base, received_sma->sem_base, size_sems);
+
+	list_splice_init(&received_sma->list_id, &local_sma->list_id);
+
+	update_sem_queues(local_sma, received_sma);
+}
+
+int semarray_alloc_object (struct gdm_obj * obj_entry,
+			   struct gdm_set * set,
+			   objid_t objid)
+{
+	semarray_object_t *sem_object;
+
+	sem_object = kmem_cache_alloc(semarray_object_cachep, GFP_KERNEL);
+	if (!sem_object)
+		return -ENOMEM;
+
+	sem_object->local_sem = NULL;
+	sem_object->mobile_sem_base = NULL;
+	obj_entry->object = sem_object;
+
+	return 0;
+}
+
+
+int semarray_insert_object (struct gdm_obj * obj_entry,
+			    struct gdm_set * set,
+			    objid_t objid)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sem;
+	int r = 0;
+
+	sem_object = obj_entry->object;
+	BUG_ON(!sem_object);
+
+	if (!sem_object->local_sem) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		sem = create_local_sem(ns, &sem_object->imported_sem);
+		sem_object->local_sem = sem;
+
+		if (IS_ERR(sem)) {
+			r = PTR_ERR(sem);
+			BUG();
+		}
+
+		put_ipc_ns(ns);
+	}
+
+	if (!r)
+		update_local_sem(sem_object->local_sem,
+				 &sem_object->imported_sem);
+
+	return r;
+}
+
+
+int semarray_invalidate_object (struct gdm_obj * obj_entry,
+				struct gdm_set * set,
+				objid_t objid)
+{
+	semarray_object_t *sem_object = obj_entry->object;
+	struct sem_array *sma = sem_object->local_sem;
+	struct sem_undo *un, *tu;
+	struct sem_queue *q, *tq;
+	BUG_ON(!list_empty(&sem_object->imported_sem.list_id));
+	BUG_ON(!list_empty(&sem_object->imported_sem.sem_pending));
+	BUG_ON(!list_empty(&sem_object->imported_sem.remote_sem_pending));
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		list_del(&un->list_id);
+		kfree(un);
+	}
+	list_for_each_entry_safe(q, tq, &sma->remote_sem_pending, list) {
+		list_del(&q->list);
+		free_semqueue(q);
+	}
+	return gdm_IO_KEEP_OBJECT;
+}
