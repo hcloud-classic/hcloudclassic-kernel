@@ -156,3 +156,26 @@ int semarray_insert_object (struct gdm_obj * obj_entry,
 
 	return r;
 }
+
+
+int semarray_invalidate_object (struct gdm_obj * obj_entry,
+				struct gdm_set * set,
+				objid_t objid)
+{
+	semarray_object_t *sem_object = obj_entry->object;
+	struct sem_array *sma = sem_object->local_sem;
+	struct sem_undo *un, *tu;
+	struct sem_queue *q, *tq;
+	BUG_ON(!list_empty(&sem_object->imported_sem.list_id));
+	BUG_ON(!list_empty(&sem_object->imported_sem.sem_pending));
+	BUG_ON(!list_empty(&sem_object->imported_sem.remote_sem_pending));
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		list_del(&un->list_id);
+		kfree(un);
+	}
+	list_for_each_entry_safe(q, tq, &sma->remote_sem_pending, list) {
+		list_del(&q->list);
+		free_semqueue(q);
+	}
+	return gdm_IO_KEEP_OBJECT;
+}
