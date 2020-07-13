@@ -87,3 +87,36 @@ static inline void update_sem_queues(struct sem_array *sma,
 
 	BUG_ON(!list_empty(&received_sma->remote_sem_pending));
 }
+
+static void update_local_sem(struct sem_array *local_sma,
+			     struct sem_array *received_sma)
+{
+	int size_sems;
+
+	size_sems = local_sma->sem_nsems * sizeof (struct sem);
+
+	local_sma->sem_otime = received_sma->sem_otime;
+	local_sma->sem_ctime = received_sma->sem_ctime;
+	memcpy(local_sma->sem_base, received_sma->sem_base, size_sems);
+
+	list_splice_init(&received_sma->list_id, &local_sma->list_id);
+
+	update_sem_queues(local_sma, received_sma);
+}
+
+int semarray_alloc_object (struct gdm_obj * obj_entry,
+			   struct gdm_set * set,
+			   objid_t objid)
+{
+	semarray_object_t *sem_object;
+
+	sem_object = kmem_cache_alloc(semarray_object_cachep, GFP_KERNEL);
+	if (!sem_object)
+		return -ENOMEM;
+
+	sem_object->local_sem = NULL;
+	sem_object->mobile_sem_base = NULL;
+	obj_entry->object = sem_object;
+
+	return 0;
+}
