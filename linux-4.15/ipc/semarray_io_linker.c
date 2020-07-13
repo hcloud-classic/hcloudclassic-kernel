@@ -120,3 +120,39 @@ int semarray_alloc_object (struct gdm_obj * obj_entry,
 
 	return 0;
 }
+
+
+int semarray_insert_object (struct gdm_obj * obj_entry,
+			    struct gdm_set * set,
+			    objid_t objid)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sem;
+	int r = 0;
+
+	sem_object = obj_entry->object;
+	BUG_ON(!sem_object);
+
+	if (!sem_object->local_sem) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		sem = create_local_sem(ns, &sem_object->imported_sem);
+		sem_object->local_sem = sem;
+
+		if (IS_ERR(sem)) {
+			r = PTR_ERR(sem);
+			BUG();
+		}
+
+		put_ipc_ns(ns);
+	}
+
+	if (!r)
+		update_local_sem(sem_object->local_sem,
+				 &sem_object->imported_sem);
+
+	return r;
+}
