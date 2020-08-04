@@ -268,3 +268,46 @@ static inline void __export_one_remote_semqueue(struct rpc_desc *desc,
 		rpc_pack_type(desc, q->undo->proc_list_id);
 	}
 }
+
+
+static inline void __export_semqueues(struct rpc_desc *desc,
+				      const struct sem_array* sma)
+{
+	struct sem_queue *q;
+	long nb_sem_pending = 0;
+
+	list_for_each_entry(q, &sma->sem_pending, list)
+		nb_sem_pending++;
+
+	list_for_each_entry(q, &sma->remote_sem_pending, list)
+		nb_sem_pending++;
+
+	rpc_pack_type(desc, nb_sem_pending);
+
+	list_for_each_entry(q, &sma->sem_pending, list)
+		__export_one_local_semqueue(desc, q);
+
+	list_for_each_entry(q, &sma->remote_sem_pending, list)
+		__export_one_remote_semqueue(desc, q);
+}
+
+int semarray_export_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sma;
+
+	sem_object = obj_entry->object;
+	sma = sem_object->local_sem;
+
+	BUG_ON(!sma);
+
+	__export_semarray(desc, sem_object, sma);
+	__export_semundos(desc, sma);
+	__export_semqueues(desc, sma);
+
+	return 0;
+}
