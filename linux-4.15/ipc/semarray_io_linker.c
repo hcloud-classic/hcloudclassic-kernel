@@ -207,3 +207,32 @@ int semarray_remove_object(void *object, struct gdm_set * set,
 
 	return 0;
 }
+
+
+
+static inline void __export_semarray(struct rpc_desc *desc,
+				     const semarray_object_t *sem_object,
+				     const struct sem_array* sma)
+{
+	rpc_pack(desc, 0, sma, sizeof(struct sem_array));
+	rpc_pack(desc, 0, sma->sem_base, sma->sem_nsems * sizeof (struct sem));
+}
+
+static inline void __export_semundos(struct rpc_desc *desc,
+				     const struct sem_array* sma)
+{
+	long nb_semundo = 0;
+	struct sem_undo *un;
+
+	list_for_each_entry(un, &sma->list_id, list_id)
+		nb_semundo++;
+
+	rpc_pack_type(desc, nb_semundo);
+
+	list_for_each_entry(un, &sma->list_id, list_id) {
+		BUG_ON(!list_empty(&un->list_proc));
+
+		rpc_pack(desc, 0, un, sizeof(struct sem_undo) +
+			 sma->sem_nsems * sizeof(short));
+	}
+}
