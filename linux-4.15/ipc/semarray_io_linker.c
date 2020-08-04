@@ -253,3 +253,18 @@ static inline void __export_one_local_semqueue(struct rpc_desc *desc,
 		rpc_pack_type(desc, q->undo->proc_list_id);
 	}
 }
+
+
+static inline void __export_one_remote_semqueue(struct rpc_desc *desc,
+						const struct sem_queue* q)
+{
+	rpc_pack(desc, 0, q, sizeof(struct sem_queue));
+	if (q->nsops)
+		rpc_pack(desc, 0, q->sops,
+			 q->nsops * sizeof(struct sembuf));
+
+	if (q->undo) {
+		BUG_ON(!list_empty(&q->undo->list_proc));
+		rpc_pack_type(desc, q->undo->proc_list_id);
+	}
+}
