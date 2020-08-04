@@ -236,3 +236,20 @@ static inline void __export_semundos(struct rpc_desc *desc,
 			 sma->sem_nsems * sizeof(short));
 	}
 }
+
+
+static inline void __export_one_local_semqueue(struct rpc_desc *desc,
+					       const struct sem_queue* q)
+{
+	struct sem_queue q2 = *q;
+	q2.sleeper = (void*)((long)(task_pid_knr(q->sleeper)));
+	rpc_pack_type(desc, q2);
+	if (q->nsops)
+		rpc_pack(desc, 0, q->sops,
+			 q->nsops * sizeof(struct sembuf));
+
+	if (q->undo) {
+		BUG_ON(!list_empty(&q->undo->list_proc));
+		rpc_pack_type(desc, q->undo->proc_list_id);
+	}
+}
