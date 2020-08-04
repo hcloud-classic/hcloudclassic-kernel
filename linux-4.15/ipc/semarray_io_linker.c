@@ -179,3 +179,31 @@ int semarray_invalidate_object (struct gdm_obj * obj_entry,
 	}
 	return gdm_IO_KEEP_OBJECT;
 }
+
+int semarray_remove_object(void *object, struct gdm_set * set,
+			   objid_t objid)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sma;
+
+	sem_object = object;
+	if (sem_object) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		sma = sem_object->local_sem;
+
+		local_sem_lock(ns, sma->sem_perm.id);
+		local_freeary(ns, &sma->sem_perm);
+
+		kfree(sem_object->mobile_sem_base);
+		sem_object->mobile_sem_base = NULL;
+		kmem_cache_free(semarray_object_cachep, sem_object);
+
+		put_ipc_ns(ns);
+	}
+
+	return 0;
+}
