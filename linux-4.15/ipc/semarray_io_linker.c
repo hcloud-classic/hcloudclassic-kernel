@@ -179,3 +179,135 @@ int semarray_invalidate_object (struct gdm_obj * obj_entry,
 	}
 	return gdm_IO_KEEP_OBJECT;
 }
+
+int semarray_remove_object(void *object, struct gdm_set * set,
+			   objid_t objid)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sma;
+
+	sem_object = object;
+	if (sem_object) {
+		struct ipc_namespace *ns;
+
+		ns = find_get_hcc_ipcns();
+		BUG_ON(!ns);
+
+		sma = sem_object->local_sem;
+
+		local_sem_lock(ns, sma->sem_perm.id);
+		local_freeary(ns, &sma->sem_perm);
+
+		kfree(sem_object->mobile_sem_base);
+		sem_object->mobile_sem_base = NULL;
+		kmem_cache_free(semarray_object_cachep, sem_object);
+
+		put_ipc_ns(ns);
+	}
+
+	return 0;
+}
+
+
+
+static inline void __export_semarray(struct rpc_desc *desc,
+				     const semarray_object_t *sem_object,
+				     const struct sem_array* sma)
+{
+	rpc_pack(desc, 0, sma, sizeof(struct sem_array));
+	rpc_pack(desc, 0, sma->sem_base, sma->sem_nsems * sizeof (struct sem));
+}
+
+static inline void __export_semundos(struct rpc_desc *desc,
+				     const struct sem_array* sma)
+{
+	long nb_semundo = 0;
+	struct sem_undo *un;
+
+	list_for_each_entry(un, &sma->list_id, list_id)
+		nb_semundo++;
+
+	rpc_pack_type(desc, nb_semundo);
+
+	list_for_each_entry(un, &sma->list_id, list_id) {
+		BUG_ON(!list_empty(&un->list_proc));
+
+		rpc_pack(desc, 0, un, sizeof(struct sem_undo) +
+			 sma->sem_nsems * sizeof(short));
+	}
+}
+
+
+static inline void __export_one_local_semqueue(struct rpc_desc *desc,
+					       const struct sem_queue* q)
+{
+	struct sem_queue q2 = *q;
+	q2.sleeper = (void*)((long)(task_pid_knr(q->sleeper)));
+	rpc_pack_type(desc, q2);
+	if (q->nsops)
+		rpc_pack(desc, 0, q->sops,
+			 q->nsops * sizeof(struct sembuf));
+
+	if (q->undo) {
+		BUG_ON(!list_empty(&q->undo->list_proc));
+		rpc_pack_type(desc, q->undo->proc_list_id);
+	}
+}
+
+
+static inline void __export_one_remote_semqueue(struct rpc_desc *desc,
+						const struct sem_queue* q)
+{
+	rpc_pack(desc, 0, q, sizeof(struct sem_queue));
+	if (q->nsops)
+		rpc_pack(desc, 0, q->sops,
+			 q->nsops * sizeof(struct sembuf));
+
+	if (q->undo) {
+		BUG_ON(!list_empty(&q->undo->list_proc));
+		rpc_pack_type(desc, q->undo->proc_list_id);
+	}
+}
+
+
+static inline void __export_semqueues(struct rpc_desc *desc,
+				      const struct sem_array* sma)
+{
+	struct sem_queue *q;
+	long nb_sem_pending = 0;
+
+	list_for_each_entry(q, &sma->sem_pending, list)
+		nb_sem_pending++;
+
+	list_for_each_entry(q, &sma->remote_sem_pending, list)
+		nb_sem_pending++;
+
+	rpc_pack_type(desc, nb_sem_pending);
+
+	list_for_each_entry(q, &sma->sem_pending, list)
+		__export_one_local_semqueue(desc, q);
+
+	list_for_each_entry(q, &sma->remote_sem_pending, list)
+		__export_one_remote_semqueue(desc, q);
+}
+
+int semarray_export_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	semarray_object_t *sem_object;
+	struct sem_array *sma;
+
+	sem_object = obj_entry->object;
+	sma = sem_object->local_sem;
+
+	BUG_ON(!sma);
+
+	__export_semarray(desc, sem_object, sma);
+	__export_semundos(desc, sma);
+	__export_semqueues(desc, sma);
+
+	return 0;
+}
