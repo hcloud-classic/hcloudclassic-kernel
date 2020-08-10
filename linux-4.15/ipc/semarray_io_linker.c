@@ -369,3 +369,63 @@ static inline int __import_semundos(struct rpc_desc *desc,
 unalloc_undos:
 	return -ENOMEM;
 }
+
+
+static inline void __unimport_semundos(struct sem_array *sma)
+{
+	struct sem_undo * un, *tu;
+
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		list_del(&un->list_id);
+		kfree(un);
+	}
+}
+
+static inline int import_one_semqueue(struct rpc_desc *desc,
+				      struct sem_array *sma)
+{
+	unique_id_t undo_proc_list_id;
+	struct sem_undo* undo;
+	int r = -ENOMEM;
+	struct sem_queue *q = kmalloc(sizeof(struct sem_queue), GFP_KERNEL);
+	if (!q)
+		goto exit;
+
+	rpc_unpack(desc, 0, q, sizeof(struct sem_queue));
+	INIT_LIST_HEAD(&q->list);
+
+	if (q->nsops) {
+		q->sops = kzalloc(q->nsops * sizeof(struct sembuf),
+				  GFP_KERNEL);
+		if (!q->sops)
+			goto unalloc_q;
+		rpc_unpack(desc, 0, q->sops, q->nsops * sizeof(struct sembuf));
+	}
+
+	if (q->undo) {
+		rpc_unpack_type(desc, undo_proc_list_id);
+
+		list_for_each_entry(undo, &sma->list_id, list_id) {
+			if (undo->proc_list_id == undo_proc_list_id) {
+				q->undo = undo;
+				goto undo_found;
+			}
+		}
+	}
+
+undo_found:
+	r = 0;
+
+	/* split between remote and local
+	   queues is done in update_local_sem */
+	list_add(&q->list, &sma->remote_sem_pending);
+
+	BUG_ON(!q->sleeper);
+	return r;
+
+unalloc_q:
+	kfree(q);
+
+exit:
+	return r;
+}
