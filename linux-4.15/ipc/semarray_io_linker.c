@@ -416,8 +416,6 @@ static inline int import_one_semqueue(struct rpc_desc *desc,
 undo_found:
 	r = 0;
 
-	/* split between remote and local
-	   queues is done in update_local_sem */
 	list_add(&q->list, &sma->remote_sem_pending);
 
 	BUG_ON(!q->sleeper);
@@ -427,5 +425,84 @@ unalloc_q:
 	kfree(q);
 
 exit:
+	return r;
+}
+
+
+
+static inline int __import_semqueues(struct rpc_desc *desc,
+				     struct sem_array *sma)
+{
+	long nb_sempending, i;
+	int r;
+
+	r = rpc_unpack_type(desc, nb_sempending);
+	if (r)
+		goto err;
+
+	BUG_ON(!list_empty(&sma->remote_sem_pending));
+
+	for (i=0; i < nb_sempending; i++) {
+		r = import_one_semqueue(desc, sma);
+		if (r)
+			goto err;
+	}
+
+#ifdef CONFIG_HCC_DEBUG
+	{
+		struct sem_queue *q;
+		i=0;
+		list_for_each_entry(q, &sma->remote_sem_pending, list)
+			i++;
+
+		BUG_ON(nb_sempending != i);
+	}
+#endif
+
+err:
+	return r;
+}
+
+static inline void __unimport_semqueues(struct sem_array *sma)
+{
+	struct sem_queue *q, *tq;
+
+	list_for_each_entry_safe(q, tq, &sma->remote_sem_pending, list) {
+		list_del(&q->list);
+		free_semqueue(q);
+	}
+}
+
+int semarray_import_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	semarray_object_t *sem_object;
+	int r = 0;
+	sem_object = obj_entry->object;
+
+	r = __import_semarray(desc, sem_object);
+	if (r)
+		goto err;
+
+	r = __import_semundos(desc, &sem_object->imported_sem);
+	if (r)
+		goto unimport_semundos;
+
+	r = __import_semqueues(desc, &sem_object->imported_sem);
+	if (r)
+		goto unimport_semqueues;
+
+	goto err;
+
+unimport_semqueues:
+	__unimport_semqueues(&sem_object->imported_sem);
+
+unimport_semundos:
+	__unimport_semundos(&sem_object->imported_sem);
+
+err:
 	return r;
 }
