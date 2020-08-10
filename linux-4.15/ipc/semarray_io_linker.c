@@ -311,3 +311,198 @@ int semarray_export_object (struct rpc_desc *desc,
 
 	return 0;
 }
+
+
+static inline int __import_semarray(struct rpc_desc *desc,
+				    semarray_object_t *sem_object)
+{
+	struct sem_array buffer;
+	int size_sems;
+
+	rpc_unpack_type(desc, buffer);
+	sem_object->imported_sem = buffer;
+
+	size_sems = sem_object->imported_sem.sem_nsems * sizeof(struct sem);
+	if (!sem_object->mobile_sem_base)
+		sem_object->mobile_sem_base = kmalloc(size_sems, GFP_KERNEL);
+	if (!sem_object->mobile_sem_base)
+		return -ENOMEM;
+
+	rpc_unpack(desc, 0, sem_object->mobile_sem_base, size_sems);
+	sem_object->imported_sem.sem_base = sem_object->mobile_sem_base;
+
+	INIT_LIST_HEAD(&sem_object->imported_sem.sem_pending);
+	INIT_LIST_HEAD(&sem_object->imported_sem.remote_sem_pending);
+	INIT_LIST_HEAD(&sem_object->imported_sem.list_id);
+
+	return 0;
+}
+
+static inline int __import_semundos(struct rpc_desc *desc,
+				    struct sem_array *sma)
+{
+	struct sem_undo* undo;
+	long nb_semundo, i;
+	int size_undo;
+	size_undo = sizeof(struct sem_undo) +
+		sma->sem_nsems * sizeof(short);
+
+	rpc_unpack_type(desc, nb_semundo);
+
+	BUG_ON(!list_empty(&sma->list_id));
+
+	for (i=0; i < nb_semundo; i++) {
+		undo = kzalloc(size_undo, GFP_KERNEL);
+		if (!undo)
+			goto unalloc_undos;
+
+		rpc_unpack(desc, 0, undo, size_undo);
+		INIT_LIST_HEAD(&undo->list_id);
+		INIT_LIST_HEAD(&undo->list_proc);
+
+		undo->semadj = (short *) &undo[1];
+		list_add(&undo->list_id, &sma->list_id);
+	}
+
+	return 0;
+
+unalloc_undos:
+	return -ENOMEM;
+}
+
+
+static inline void __unimport_semundos(struct sem_array *sma)
+{
+	struct sem_undo * un, *tu;
+
+	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
+		list_del(&un->list_id);
+		kfree(un);
+	}
+}
+
+static inline int import_one_semqueue(struct rpc_desc *desc,
+				      struct sem_array *sma)
+{
+	unique_id_t undo_proc_list_id;
+	struct sem_undo* undo;
+	int r = -ENOMEM;
+	struct sem_queue *q = kmalloc(sizeof(struct sem_queue), GFP_KERNEL);
+	if (!q)
+		goto exit;
+
+	rpc_unpack(desc, 0, q, sizeof(struct sem_queue));
+	INIT_LIST_HEAD(&q->list);
+
+	if (q->nsops) {
+		q->sops = kzalloc(q->nsops * sizeof(struct sembuf),
+				  GFP_KERNEL);
+		if (!q->sops)
+			goto unalloc_q;
+		rpc_unpack(desc, 0, q->sops, q->nsops * sizeof(struct sembuf));
+	}
+
+	if (q->undo) {
+		rpc_unpack_type(desc, undo_proc_list_id);
+
+		list_for_each_entry(undo, &sma->list_id, list_id) {
+			if (undo->proc_list_id == undo_proc_list_id) {
+				q->undo = undo;
+				goto undo_found;
+			}
+		}
+	}
+
+undo_found:
+	r = 0;
+
+	list_add(&q->list, &sma->remote_sem_pending);
+
+	BUG_ON(!q->sleeper);
+	return r;
+
+unalloc_q:
+	kfree(q);
+
+exit:
+	return r;
+}
+
+
+
+static inline int __import_semqueues(struct rpc_desc *desc,
+				     struct sem_array *sma)
+{
+	long nb_sempending, i;
+	int r;
+
+	r = rpc_unpack_type(desc, nb_sempending);
+	if (r)
+		goto err;
+
+	BUG_ON(!list_empty(&sma->remote_sem_pending));
+
+	for (i=0; i < nb_sempending; i++) {
+		r = import_one_semqueue(desc, sma);
+		if (r)
+			goto err;
+	}
+
+#ifdef CONFIG_HCC_DEBUG
+	{
+		struct sem_queue *q;
+		i=0;
+		list_for_each_entry(q, &sma->remote_sem_pending, list)
+			i++;
+
+		BUG_ON(nb_sempending != i);
+	}
+#endif
+
+err:
+	return r;
+}
+
+static inline void __unimport_semqueues(struct sem_array *sma)
+{
+	struct sem_queue *q, *tq;
+
+	list_for_each_entry_safe(q, tq, &sma->remote_sem_pending, list) {
+		list_del(&q->list);
+		free_semqueue(q);
+	}
+}
+
+int semarray_import_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	semarray_object_t *sem_object;
+	int r = 0;
+	sem_object = obj_entry->object;
+
+	r = __import_semarray(desc, sem_object);
+	if (r)
+		goto err;
+
+	r = __import_semundos(desc, &sem_object->imported_sem);
+	if (r)
+		goto unimport_semundos;
+
+	r = __import_semqueues(desc, &sem_object->imported_sem);
+	if (r)
+		goto unimport_semqueues;
+
+	goto err;
+
+unimport_semqueues:
+	__unimport_semqueues(&sem_object->imported_sem);
+
+unimport_semundos:
+	__unimport_semundos(&sem_object->imported_sem);
+
+err:
+	return r;
+}
