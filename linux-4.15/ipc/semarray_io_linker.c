@@ -311,3 +311,61 @@ int semarray_export_object (struct rpc_desc *desc,
 
 	return 0;
 }
+
+
+static inline int __import_semarray(struct rpc_desc *desc,
+				    semarray_object_t *sem_object)
+{
+	struct sem_array buffer;
+	int size_sems;
+
+	rpc_unpack_type(desc, buffer);
+	sem_object->imported_sem = buffer;
+
+	size_sems = sem_object->imported_sem.sem_nsems * sizeof(struct sem);
+	if (!sem_object->mobile_sem_base)
+		sem_object->mobile_sem_base = kmalloc(size_sems, GFP_KERNEL);
+	if (!sem_object->mobile_sem_base)
+		return -ENOMEM;
+
+	rpc_unpack(desc, 0, sem_object->mobile_sem_base, size_sems);
+	sem_object->imported_sem.sem_base = sem_object->mobile_sem_base;
+
+	INIT_LIST_HEAD(&sem_object->imported_sem.sem_pending);
+	INIT_LIST_HEAD(&sem_object->imported_sem.remote_sem_pending);
+	INIT_LIST_HEAD(&sem_object->imported_sem.list_id);
+
+	return 0;
+}
+
+static inline int __import_semundos(struct rpc_desc *desc,
+				    struct sem_array *sma)
+{
+	struct sem_undo* undo;
+	long nb_semundo, i;
+	int size_undo;
+	size_undo = sizeof(struct sem_undo) +
+		sma->sem_nsems * sizeof(short);
+
+	rpc_unpack_type(desc, nb_semundo);
+
+	BUG_ON(!list_empty(&sma->list_id));
+
+	for (i=0; i < nb_semundo; i++) {
+		undo = kzalloc(size_undo, GFP_KERNEL);
+		if (!undo)
+			goto unalloc_undos;
+
+		rpc_unpack(desc, 0, undo, size_undo);
+		INIT_LIST_HEAD(&undo->list_id);
+		INIT_LIST_HEAD(&undo->list_proc);
+
+		undo->semadj = (short *) &undo[1];
+		list_add(&undo->list_id, &sma->list_id);
+	}
+
+	return 0;
+
+unalloc_undos:
+	return -ENOMEM;
+}
