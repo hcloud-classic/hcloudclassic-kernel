@@ -518,3 +518,8 @@ struct iolinker_struct semarray_linker = {
 	export_object:     semarray_export_object,
 	import_object:     semarray_import_object
 };
+
+struct iolinker_struct semkey_linker = {
+	linker_name:       "semkey",
+	linker_id:         SEMKEY_LINKER,
+};
