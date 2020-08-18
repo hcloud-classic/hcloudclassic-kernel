@@ -84,3 +84,37 @@ int undolist_invalidate_object (struct gdm_obj * obj_entry,
 
 	return 0;
 }
+
+int undolist_export_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	struct semundo_list_object *undo_list;
+	struct semundo_id *un;
+	int nb_semundo = 0, r;
+
+	undo_list = obj_entry->object;
+
+	r = rpc_pack_type(desc, *undo_list);
+	if (r)
+		goto error;
+
+	/* counting number of semundo to send */
+	for (un = undo_list->list; un;  un = un->next)
+		nb_semundo++;
+
+	r = rpc_pack_type(desc, nb_semundo);
+
+	BUG_ON(nb_semundo != atomic_read(&undo_list->semcnt));
+
+	/* really sending the semundo identifier */
+	for (un = undo_list->list; un;  un = un->next) {
+		r = rpc_pack_type(desc, *un);
+		if (r)
+			goto error;
+	}
+error:
+	return r;
+}
