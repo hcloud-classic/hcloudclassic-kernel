@@ -506,3 +506,15 @@ unimport_semundos:
 err:
 	return r;
 }
+
+struct iolinker_struct semarray_linker = {
+	first_touch:       semarray_first_touch,
+	remove_object:     semarray_remove_object,
+	invalidate_object: semarray_invalidate_object,
+	insert_object:     semarray_insert_object,
+	linker_name:       "semarray",
+	linker_id:         SEMARRAY_LINKER,
+	alloc_object:      semarray_alloc_object,
+	export_object:     semarray_export_object,
+	import_object:     semarray_import_object
+};
