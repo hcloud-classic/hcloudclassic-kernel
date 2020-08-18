@@ -32,3 +32,18 @@ static inline struct semundo_list_object * __undolist_alloc(void)
 
 	return undo_list;
 }
+
+
+int undolist_alloc_object (struct gdm_obj * obj_entry,
+			   struct gdm_set * set,
+			   objid_t objid)
+{
+	struct semundo_list_object *undo_list;
+
+	undo_list = __undolist_alloc();
+	if (IS_ERR(undo_list))
+		return PTR_ERR(undo_list);
+
+	obj_entry->object = undo_list;
+	return 0;
+}s
