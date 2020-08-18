@@ -46,4 +46,13 @@ int undolist_alloc_object (struct gdm_obj * obj_entry,
 
 	obj_entry->object = undo_list;
 	return 0;
-}s
+}
+
+int undolist_first_touch (struct kddm_obj * obj_entry,
+			  struct kddm_set * set,
+			  objid_t objid,
+			  int flags)
+{
+	BUG();
+	return -EINVAL;
+}
