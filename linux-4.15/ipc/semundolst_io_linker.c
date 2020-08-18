@@ -118,3 +118,47 @@ int undolist_export_object (struct rpc_desc *desc,
 error:
 	return r;
 }
+
+int undolist_import_object (struct rpc_desc *desc,
+			    struct gdm_set *set,
+			    struct gdm_obj *obj_entry,
+			    objid_t objid,
+			    int flags)
+{
+	struct semundo_list_object *undo_list;
+	struct semundo_id *un, *prev = NULL;
+	int nb_semundo = 0, i=0, r;
+
+	undo_list = obj_entry->object;
+
+	r = rpc_unpack_type(desc, *undo_list);
+	if (r)
+		goto error;
+
+	r = rpc_unpack_type(desc, nb_semundo);
+	if (r)
+		goto error;
+
+	BUG_ON(nb_semundo != atomic_read(&undo_list->semcnt));
+
+	for (i=0; i < nb_semundo; i++) {
+		un = kmalloc(sizeof(struct semundo_id), GFP_KERNEL);
+		if (!un) {
+			r = -ENOMEM;
+			goto error;
+		}
+
+		r = rpc_unpack_type(desc, *un);
+		if (r)
+			goto error;
+
+		un->next = NULL;
+		if (prev)
+			prev->next = un;
+		else
+			undo_list->list = un;
+		prev = un;
+	}
+error:
+	return r;
+}
