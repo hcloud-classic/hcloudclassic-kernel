@@ -71,3 +71,16 @@ int undolist_remove_object (void *object,
 
 	return 0;
 }
+
+int undolist_invalidate_object (struct gdm_obj * obj_entry,
+				struct gdm_set * set,
+				objid_t objid)
+{
+	struct semundo_list_object *undo_list;
+	undo_list = obj_entry->object;
+
+	__undolist_remove(undo_list);
+	obj_entry->object = NULL;
+
+	return 0;
+}
