@@ -58,3 +58,41 @@ int gdm_io_instantiate (struct gdm_set * set,
 
 	return err;
 }
+
+
+void gdm_io_uninstantiate (struct gdm_set * set,
+                            int destroy)
+{
+	if (set->iolinker && set->iolinker->uninstantiate)
+		set->iolinker->uninstantiate (set, destroy);
+
+	if (set->private_data)
+		kfree(set->private_data);
+	set->private_data = NULL;
+	set->iolinker = NULL;
+}
+
+int gdm_io_alloc_object (struct gdm_obj * obj_entry,
+			  struct gdm_set * set,
+			  objid_t objid)
+{
+	int r = 0;
+
+	if (obj_entry->object != NULL)
+		goto done;
+
+	if (set->iolinker && set->iolinker->alloc_object)
+		r = set->iolinker->alloc_object (obj_entry, set, objid);
+	else {
+		/* Default allocation function */
+		obj_entry->object = kmalloc(set->obj_size, GFP_KERNEL);
+		if (obj_entry->object == NULL)
+			r = -ENOMEM;
+	}
+
+	if (obj_entry->object != NULL)
+		atomic_inc(&set->nr_objects);
+
+done:
+	return r;
+}
