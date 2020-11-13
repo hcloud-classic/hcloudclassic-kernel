@@ -259,9 +259,13 @@ void rotate_reclaimable_page(struct page *page)
 		local_irq_restore(flags);
 	}
 }
-
+#ifdef CONFIG_HCC_MM
+static void update_page_reclaim_stat(struct lruvec *lruvec,
+				     int file, int gdm, int rotated)
+#else
 static void update_page_reclaim_stat(struct lruvec *lruvec,
 				     int file, int rotated)
+#endif
 {
 	struct zone_reclaim_stat *reclaim_stat = &lruvec->reclaim_stat;
 

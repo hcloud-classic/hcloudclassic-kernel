@@ -23,7 +23,7 @@ int shm_memory_insert_page(struct gdm_obj *objEntry, struct gdm_set *gdm,
 	struct page *page;
 	struct shmid_kernel *shp;
 	struct address_space *mapping = NULL;
-	int ret, shm_id;
+	int ret=0, shm_id;
 	struct ipc_namespace *ns;
 
 	ns = find_get_hcc_ipcns();
@@ -44,14 +44,14 @@ int shm_memory_insert_page(struct gdm_obj *objEntry, struct gdm_set *gdm,
 
 	page = objEntry->object;
 	page->index = objid;
-	ret = add_to_page_cache_lru(page, mapping, objid, GFP_ATOMIC);
+	ret = add_to_page_cache(page, mapping, objid, GFP_ATOMIC);
 	if (ret) {
 		printk("shm_memory_insert_page: add_to_page_cache_lru returns %d\n",
 		       ret);
 		BUG();
 	}
 	unlock_page(page);
-
+	add_page_to_unevictable_list(page);
 error:
 	put_ipc_ns(ns);
 
