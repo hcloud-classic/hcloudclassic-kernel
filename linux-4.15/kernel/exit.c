@@ -196,8 +196,11 @@ repeat:
 
 	write_lock_irq(&tasklist_lock);
 	ptrace_release_task(p);
+#ifdef CONFIG_HCC_EPM
+	BUG_ON(task->exit_state != EXIT_DEAD && task->exit_state != EXIT_MIGRATE);
+#else
 	__exit_signal(p);
-
+#endif
 	/*
 	 * If we are the last non-leader member of the thread
 	 * group, and the leader is zombie, then notify the
