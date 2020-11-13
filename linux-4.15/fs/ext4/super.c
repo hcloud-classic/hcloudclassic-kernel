@@ -43,6 +43,9 @@
 
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#ifdef CONFIG_HCC_MM
+#include <hcc/hccsyms.h>
+#endif
 
 #include "ext4.h"
 #include "ext4_extents.h"	/* Needed for trace points definition */
@@ -5795,6 +5798,13 @@ static int __init ext4_init_fs(void)
 
 	for (i = 0; i < EXT4_WQ_HASH_SZ; i++)
 		init_waitqueue_head(&ext4__ioend_wq[i]);
+
+#ifdef CONFIG_HCC_MM
+	err = hccsyms_register(HCCSYMS_VM_OPS_FILE_EXT4, (void *)&ext4_file_vm_ops);
+	if(err)
+			goto out5;
+#endif
+
 
 	err = ext4_init_es();
 	if (err)
