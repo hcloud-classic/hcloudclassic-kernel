@@ -1,0 +1,1890 @@
+/*
+ *
+ *  Copyright (C) 1991, 1992  Linus Torvalds
+ */
+
+/*
+ * entry.S contains the system-call and fault low-level handling routines.
+ * This also contains the timer-interrupt handler, as well as all interrupts
+ * and faults that can result in a task-switch.
+ *
+ * NOTE: This code handles signal-recognition, which happens every time
+ * after a timer-interrupt and after each system call.
+ *
+ * I changed all the .align's to 4 (16 byte alignment), as that's faster
+ * on a 486.
+ *
+ * Stack layout in 'syscall_exit':
+ * 	ptrace needs to have all regs on the stack.
+ *	if the order here is changed, it needs to be
+ *	updated in fork.c:copy_process, signal.c:do_signal,
+ *	ptrace.c and ptrace.h
+ *
+ *	 0(%esp) - %ebx
+ *	 4(%esp) - %ecx
+ *	 8(%esp) - %edx
+ *       C(%esp) - %esi
+ *	10(%esp) - %edi
+ *	14(%esp) - %ebp
+ *	18(%esp) - %eax
+ *	1C(%esp) - %ds
+ *	20(%esp) - %es
+ *	24(%esp) - %fs
+ *	28(%esp) - %gs		saved iff !CONFIG_X86_32_LAZY_GS
+ *	2C(%esp) - orig_eax
+ *	30(%esp) - %eip
+ *	34(%esp) - %cs
+ *	38(%esp) - %eflags
+ *	3C(%esp) - %oldesp
+ *	40(%esp) - %oldss
+ *
+ * "current" is in register %ebx during any slow entries.
+ */
+
+#include <linux/linkage.h>
+#include <asm/thread_info.h>
+#include <asm/irqflags.h>
+#include <asm/errno.h>
+#include <asm/segment.h>
+#include <asm/smp.h>
+#include <asm/page_types.h>
+#include <asm/percpu.h>
+#include <asm/dwarf2.h>
+#include <asm/processor-flags.h>
+#include <asm/ftrace.h>
+#include <asm/irq_vectors.h>
+#include <asm/cpufeature.h>
+#include <linux/err.h>
+#include <asm/nospec-branch.h>
+#include <asm/kaiser.h>
+#include <asm/spec_ctrl.h>
+
+/* Avoid __ASSEMBLER__'ifying <linux/audit.h> just for this.  */
+#include <linux/elf-em.h>
+#define AUDIT_ARCH_I386		(EM_386|__AUDIT_ARCH_LE)
+#define __AUDIT_ARCH_LE	   0x40000000
+
+#ifndef CONFIG_AUDITSYSCALL
+#define sysenter_audit	syscall_trace_entry
+#define sysexit_audit	syscall_exit_work
+#endif
+
+	.section .entry.text, "ax"
+
+/*
+ * We use macros for low-level operations which need to be overridden
+ * for paravirtualization.  The following will never clobber any registers:
+ *   INTERRUPT_RETURN (aka. "iret")
+ *   GET_CR0_INTO_EAX (aka. "movl %cr0, %eax")
+ *   ENABLE_INTERRUPTS_SYSEXIT (aka "sti; sysexit").
+ *
+ * For DISABLE_INTERRUPTS/ENABLE_INTERRUPTS (aka "cli"/"sti"), you must
+ * specify what registers can be overwritten (CLBR_NONE, CLBR_EAX/EDX/ECX/ANY).
+ * Allowing a register to be clobbered can shrink the paravirt replacement
+ * enough to patch inline, increasing performance.
+ */
+
+#define nr_syscalls ((syscall_table_size)/4)
+
+#ifdef CONFIG_PREEMPT
+#define preempt_stop(clobbers)	DISABLE_INTERRUPTS(clobbers); TRACE_IRQS_OFF
+#else
+#define preempt_stop(clobbers)
+#define resume_kernel		restore_all_kernel
+#endif
+
+.macro TRACE_IRQS_IRET
+#ifdef CONFIG_TRACE_IRQFLAGS
+	testl $X86_EFLAGS_IF,PT_EFLAGS(%esp)     # interrupts off?
+	jz 1f
+	TRACE_IRQS_ON
+1:
+#endif
+.endm
+
+#ifdef CONFIG_VM86
+#define resume_userspace_sig	check_userspace
+#else
+#define resume_userspace_sig	resume_userspace
+#endif
+
+#define PTI_SWITCH_MASK	(1 << PAGE_SHIFT)
+
+/*
+ * User gs save/restore
+ *
+ * %gs is used for userland TLS and kernel only uses it for stack
+ * canary which is required to be at %gs:20 by gcc.  Read the comment
+ * at the top of stackprotector.h for more info.
+ *
+ * Local labels 98 and 99 are used.
+ */
+#ifdef CONFIG_X86_32_LAZY_GS
+
+ /* unfortunately push/pop can't be no-op */
+.macro PUSH_GS
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+.endm
+
+ /* all the rest are no-op */
+.macro PTGS_TO_GS
+.endm
+.macro PTGS_TO_GS_EX
+.endm
+.macro GS_TO_REG reg
+.endm
+.macro REG_TO_PTGS reg
+.endm
+.macro SET_KERNEL_GS reg
+.endm
+
+#else	/* CONFIG_X86_32_LAZY_GS */
+
+.macro PUSH_GS
+	pushl %gs
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET gs, 0*/
+.endm
+
+.macro PTGS_TO_GS
+98:	mov PT_GS(%esp), %gs
+.endm
+.macro PTGS_TO_GS_EX
+.pushsection .fixup, "ax"
+99:	movl $0, PT_GS(%esp)
+	jmp 98b
+.section __ex_table, "a"
+	.align 4
+	.long 98b, 99b
+.popsection
+.endm
+
+.macro GS_TO_REG reg
+	movl %gs, \reg
+	/*CFI_REGISTER gs, \reg*/
+.endm
+.macro REG_TO_PTGS reg
+	movl \reg, PT_GS(%esp)
+	/*CFI_REL_OFFSET gs, PT_GS*/
+.endm
+.macro SET_KERNEL_GS reg
+	movl $(__KERNEL_STACK_CANARY), \reg
+	movl \reg, %gs
+.endm
+
+#endif	/* CONFIG_X86_32_LAZY_GS */
+
+.macro SAVE_ALL switch_stacks=0
+	cld
+	/* Push segment registers and %eax */
+	PUSH_GS
+	pushl %fs
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET fs, 0;*/
+	pushl %es
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET es, 0;*/
+	pushl %ds
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET ds, 0;*/
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET eax, 0
+
+	/* Load kernel segments */
+	movl	$(__USER_DS), %eax
+	movl	%eax, %ds
+	movl	%eax, %es
+	movl	$(__KERNEL_PERCPU), %eax
+	movl	%eax, %fs
+	SET_KERNEL_GS %eax
+
+	/* Push integer registers and complete PT_REGS */
+	pushl %ebp
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ebp, 0
+	pushl %edi
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET edi, 0
+	pushl %esi
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET esi, 0
+	pushl %edx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET edx, 0
+	pushl %ecx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ecx, 0
+	pushl %ebx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ebx, 0
+
+	/* Switch to kernel stack if necessary */
+.if \switch_stacks > 0
+	SWITCH_TO_KERNEL_STACK
+.endif
+
+	movl PT_EAX(%esp), %eax	/* Restore %eax */
+.endm
+
+.macro SAVE_ALL_PARANOID cr3_reg:req
+	SAVE_ALL
+
+	/*
+	 * Now switch the CR3 when PTI is enabled.
+	 *
+	 * We can enter with either user or kernel cr3, the code will
+	 * store the old cr3 in \cr3_reg and switches to the kernel cr3
+	 * if necessary.
+	 */
+	ALTERNATIVE "jmp .Lend_\@", "", X86_FEATURE_PTI_SUPPORT
+
+	movl	%cr3, \cr3_reg
+
+	testl   $KAISER_PCP_ENABLED, PER_CPU_VAR(kaiser_enabled_pcp)
+	jz	.Lend_\@
+
+	testl	$PTI_SWITCH_MASK, \cr3_reg
+	jz	.Lend_\@	/* Already on kernel cr3 */
+
+	/* On user cr3 - write new kernel cr3 */
+	andl	$(~PTI_SWITCH_MASK), \cr3_reg
+	movl	\cr3_reg, %cr3
+
+	/* Restore user cr3 value */
+	orl	$PTI_SWITCH_MASK, \cr3_reg
+
+.Lend_\@:
+.endm
+
+/*
+ * Unconditionally switch to user cr3
+ * The percpu kaiser_enabled_pcp value has to be put into the scratch
+ * register before calling.
+ */
+.macro SWITCH_TO_USER_CR3 scratch_reg:req
+	ALTERNATIVE "jmp .Lend_\@", "", X86_FEATURE_PTI_SUPPORT
+
+	testl	$KAISER_PCP_ENABLED, \scratch_reg
+	jz	.Lend_\@
+	movl	%cr3, \scratch_reg
+	orl	$PTI_SWITCH_MASK, \scratch_reg
+	movl	\scratch_reg, %cr3
+.Lend_\@:
+.endm
+
+/*
+ * Unconditionally switch to kernel cr3
+ * If noclobber is set, it is assumed that the %fs isn't set up and none
+ * of the registers and flags should be clobbered.
+ */
+.macro SWITCH_TO_KERNEL_CR3 scratch_reg:req noclobber=0
+	ALTERNATIVE "jmp .Lend_\@", "", X86_FEATURE_PTI_SUPPORT
+	.if \noclobber
+	pushfl
+	pushl	%fs
+	pushl	\scratch_reg
+	movl	$(__KERNEL_PERCPU), \scratch_reg
+	movl	\scratch_reg, %fs
+	.endif
+	testl	$KAISER_PCP_ENABLED, PER_CPU_VAR(kaiser_enabled_pcp)
+	jz	.Lend_cr3_\@
+	movl	%cr3, \scratch_reg
+	andl	$(~PTI_SWITCH_MASK), \scratch_reg
+	movl	\scratch_reg, %cr3
+.Lend_cr3_\@:
+	.if \noclobber
+	popl	\scratch_reg
+	popl	%fs
+	popfl
+	.endif
+.Lend_\@:
+.endm
+
+/*
+ * Called with pt_regs fully populated and kernel segments loaded,
+ * so we can access PER_CPU and use the integer registers.
+ *
+ * We need to be very careful here with the %esp switch, because an NMI
+ * can happen everywhere. If the NMI handler finds itself on the
+ * entry-stack, it will overwrite the task-stack and everything we
+ * copied there. So allocate the stack-frame on the task-stack and
+ * switch to it before we do any copying.
+ */
+
+#define CS_FROM_ENTRY_STACK	(1 << 31)
+
+.macro SWITCH_TO_KERNEL_STACK
+
+	ALTERNATIVE     "jmp .Lend_\@", "", X86_FEATURE_PTI_SUPPORT
+
+	SWITCH_TO_KERNEL_CR3 scratch_reg=%eax
+
+	/* Are we on the trampoline stack? Bail out if not! */
+	PER_CPU(init_tss + TSS_stack + TSS_stack_size, %edi)
+	movl	%edi, %ecx	/* Save top of trampoline stack in ecx */
+	movl	%esp, %esi	/* Load stack pointer into %esi */
+	subl	%esi, %edi	/* edi = (end of TSS stack) - esp */
+	cmpl	$TSS_stack_size, %edi
+	ja	.Lend_\@
+
+	/* Load top of task-stack into %edi */
+	movl	PER_CPU_VAR(init_tss + TSS_kernel_stack), %edi
+
+	/* Compute bytes to copy */
+	subl	%esi, %ecx
+
+	/*
+	 * This handles the special case when we enter the kernel from
+	 * kernel-mode and %esp points to the entry-stack. When this
+	 * happens we need to switch to the task-stack to run C code,
+	 * but switch back to the entry-stack again when we approach
+	 * iret and return to the interrupted code-path. This usually
+	 * happens when we hit an exception while restoring user-space
+	 * segment registers on the way back to user-space.
+	 *
+	 * When we switch to the task-stack here, we can't trust the
+	 * contents of the entry-stack anymore, as the exception handler
+	 * might be scheduled out or moved to another CPU. Therefore we
+	 * copy the complete entry-stack to the task-stack and set a
+	 * marker in the iret-frame (bit 31 of the CS dword) to detect
+	 * what we've done on the iret path.
+	 *
+	 * On the iret path we copy everything back and switch to the
+	 * entry-stack, so that the interrupted kernel code-path
+	 * continues on the same stack it was interrupted with.
+	 *
+	 * Be aware that an NMI can happen anytime in this code.
+	 *
+	 * %esi: Entry-Stack pointer (same as %esp)
+	 * %edi: Top of the task stack
+	 */
+	testl	$SEGMENT_RPL_MASK, PT_CS(%esp)
+	jnz	.Lentry_from_user_\@
+	orl	$CS_FROM_ENTRY_STACK, PT_CS(%esp)
+
+.Lentry_from_user_\@:
+	/* Allocate frame on task-stack */
+	subl	%ecx, %edi
+
+	/* Switch to task-stack */
+	movl	%edi, %esp
+
+	/*
+	 * We are now on the task-stack and can safely copy over the
+	 * stack-frame
+	 */
+	cld
+	rep movsb
+
+.Lend_\@:
+.endm
+
+/*
+ * Switch back from the kernel stack to the entry stack.
+ *
+ * The %esp register must point to pt_regs on the task stack. It will
+ * first calculate the size of the stack-frame to copy, depending on
+ * whether we return to VM86 mode or not. With that it uses 'rep movsb'
+ * to copy the contents of the stack over to the entry stack.
+ *
+ * We must be very careful here, as we can't trust the contents of the
+ * task-stack once we switched to the entry-stack. When an NMI happens
+ * while on the entry-stack, the NMI handler will switch back to the top
+ * of the task stack, overwriting our stack-frame we are about to copy.
+ * Therefore we switch the stack only after everything is copied over.
+ */
+.macro SWITCH_TO_ENTRY_STACK
+
+	ALTERNATIVE     "jmp .Lend_\@", "", X86_FEATURE_PTI_SUPPORT
+
+	/* Load top of task stack & compute bytes to copy */
+	movl	PER_CPU_VAR(init_tss + TSS_kernel_stack), %ecx
+	subl	%esp, %ecx
+
+	/* Initialize source and destination for movsb */
+	PER_CPU(init_tss + TSS_stack + TSS_stack_size, %edi)
+	subl	%ecx, %edi
+	movl	%esp, %esi
+
+	/* Save future stack pointer in %ebx */
+	movl	%edi, %ebx
+
+	/* Copy over the stack-frame */
+	cld
+	rep movsb
+
+	/*
+	 * Switch to entry-stack - needs to happen after everything is
+	 * copied because the NMI handler will overwrite the task-stack
+	 * when on entry-stack
+	 */
+	movl	%ebx, %esp
+
+.Lend_\@:
+.endm
+
+/*
+ * This macro handles the case when we return to kernel-mode on the iret
+ * path and have to switch back to the entry stack.
+ *
+ * See the comments below the .Lentry_from_kernel_\@ label in the
+ * SWITCH_TO_KERNEL_STACK macro for more details.
+ */
+.macro PARANOID_EXIT_TO_KERNEL_MODE
+
+	/*
+	 * Test if we entered the kernel with the entry-stack. Most
+	 * likely we did not, because this code only runs on the
+	 * return-to-kernel path.
+	 */
+	testl	$CS_FROM_ENTRY_STACK, PT_CS(%esp)
+	jz	.Lend_\@
+
+	/* Unlikely slow-path */
+
+	/* Clear marker from stack-frame */
+	andl	$(~CS_FROM_ENTRY_STACK), PT_CS(%esp)
+
+	/* Copy the remaining task-stack contents to entry-stack */
+	movl	%esp, %esi
+	PER_CPU(init_tss + TSS_stack + TSS_stack_size, %edi)
+
+	/* Bytes on the task-stack to ecx */
+	movl	PER_CPU_VAR(init_tss + TSS_kernel_stack), %ecx
+	subl	%esi, %ecx
+
+	/* Allocate stack-frame on entry-stack */
+	subl	%ecx, %edi
+
+	/*
+	 * Save future stack-pointer, we must not switch until the
+	 * copy is done, otherwise the NMI handler could destroy the
+	 * contents of the task-stack we are about to copy.
+	 */
+	movl	%edi, %ebx
+
+	/* Do the copy */
+	cld
+	rep movsb
+
+	/* Safe to switch to entry-stack now */
+	movl	%ebx, %esp
+
+.Lend_\@:
+.endm
+
+.macro RESTORE_INT_REGS
+	popl %ebx
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE ebx
+	popl %ecx
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE ecx
+	popl %edx
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE edx
+	popl %esi
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE esi
+	popl %edi
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE edi
+	popl %ebp
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE ebp
+	popl %eax
+	CFI_ADJUST_CFA_OFFSET -4
+	CFI_RESTORE eax
+.endm
+
+.macro RESTORE_SEGMENTS
+1:	mov PT_DS(%esp), %ds
+	CFI_ADJUST_CFA_OFFSET -4
+	/*CFI_RESTORE ds;*/
+2:	mov PT_ES(%esp), %es
+	CFI_ADJUST_CFA_OFFSET -4
+	/*CFI_RESTORE es;*/
+3:	mov PT_FS(%esp), %fs
+	CFI_ADJUST_CFA_OFFSET -4
+	/*CFI_RESTORE fs;*/
+	PTGS_TO_GS
+.pushsection .fixup, "ax"
+4:	movl $0, PT_DS(%esp)
+	jmp 1b
+5:	movl $0, PT_ES(%esp)
+	jmp 2b
+6:	movl $0, PT_FS(%esp)
+	jmp 3b
+.section __ex_table, "a"
+	.align 4
+	.long 1b, 4b
+	.long 2b, 5b
+	.long 3b, 6b
+.popsection
+	PTGS_TO_GS_EX
+.endm
+
+.macro RESTORE_SKIP_SEGMENTS pop=0
+	/* Jump over the segments stored on stack */
+	addl	$((4 * 4) + \pop), %esp
+.endm
+
+.macro RESTORE_REGS pop=0 switch_cr3=0
+	.if \switch_cr3
+	/*
+	 * Get the percpu kaiser_enabled_pcp value into the scratch register.
+	 */
+	movl PER_CPU_VAR(kaiser_enabled_pcp), %eax
+	.endif
+
+	/*
+	 * First restore user segments. This can cause exceptions, so we
+	 * run it with kernel cr3.
+	 */
+	RESTORE_SEGMENTS
+
+	.if \switch_cr3
+	/*
+	 * Segments are restored - no more exceptions from here on except on
+	 * iret, but that handled safely.
+	 */
+	SWITCH_TO_USER_CR3 scratch_reg=%eax
+	.endif
+
+	/* Restore the rest */
+	RESTORE_INT_REGS
+
+	/* Skip over already restored segment registers */
+	RESTORE_SKIP_SEGMENTS \pop
+.endm
+
+.macro RESTORE_ALL_PARANOID cr3_reg:req pop=0
+	/*
+	 * We are not going to test kaiser_enabled_pcp here as the
+	 * PTI_SWITCH_MASK will always be cleared when PTI is
+	 * disabled.
+	 */
+
+	/*
+	 * Restore segments - might cause exceptions when loading
+	 * user-space segments
+	 */
+	RESTORE_SEGMENTS
+
+	/*
+	 * Now switch the CR3 when PTI is enabled.
+	 *
+	 * We enter with kernel cr3 and switch the cr3 to the value
+	 * stored on \cr3_reg, which is either a user or a kernel cr3.
+	 */
+	ALTERNATIVE "jmp .Lswitched_\@", "", X86_FEATURE_PTI_SUPPORT
+
+	testl	$PTI_SWITCH_MASK, \cr3_reg
+	jz	.Lswitched_\@
+
+	/* User cr3 in \cr3_reg - write it to hardware cr3 */
+	movl	\cr3_reg, %cr3
+	call mds_user_clear_cpu_buffers
+
+.Lswitched_\@:
+
+	/* Restore integer registers and unwind stack to iret frame */
+	RESTORE_INT_REGS
+	RESTORE_SKIP_SEGMENTS \pop
+.endm
+
+.macro RING0_INT_FRAME
+	CFI_STARTPROC simple
+	CFI_SIGNAL_FRAME
+	CFI_DEF_CFA esp, 3*4
+	/*CFI_OFFSET cs, -2*4;*/
+	CFI_OFFSET eip, -3*4
+.endm
+
+.macro RING0_EC_FRAME
+	CFI_STARTPROC simple
+	CFI_SIGNAL_FRAME
+	CFI_DEF_CFA esp, 4*4
+	/*CFI_OFFSET cs, -2*4;*/
+	CFI_OFFSET eip, -3*4
+.endm
+
+.macro RING0_PTREGS_FRAME
+	CFI_STARTPROC simple
+	CFI_SIGNAL_FRAME
+	CFI_DEF_CFA esp, PT_OLDESP-PT_EBX
+	/*CFI_OFFSET cs, PT_CS-PT_OLDESP;*/
+	CFI_OFFSET eip, PT_EIP-PT_OLDESP
+	/*CFI_OFFSET es, PT_ES-PT_OLDESP;*/
+	/*CFI_OFFSET ds, PT_DS-PT_OLDESP;*/
+	CFI_OFFSET eax, PT_EAX-PT_OLDESP
+	CFI_OFFSET ebp, PT_EBP-PT_OLDESP
+	CFI_OFFSET edi, PT_EDI-PT_OLDESP
+	CFI_OFFSET esi, PT_ESI-PT_OLDESP
+	CFI_OFFSET edx, PT_EDX-PT_OLDESP
+	CFI_OFFSET ecx, PT_ECX-PT_OLDESP
+	CFI_OFFSET ebx, PT_EBX-PT_OLDESP
+.endm
+
+ENTRY(ret_from_fork)
+	CFI_STARTPROC
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	call schedule_tail
+	GET_THREAD_INFO(%ebp)
+	popl %eax
+	CFI_ADJUST_CFA_OFFSET -4
+	pushl $0x0202			# Reset kernel eflags
+	CFI_ADJUST_CFA_OFFSET 4
+	popfl
+	CFI_ADJUST_CFA_OFFSET -4
+	jmp syscall_exit
+	CFI_ENDPROC
+END(ret_from_fork)
+
+/*
+ * i686 does not have IP-relative addressing. So we can't directly
+ * use the MDS_USER_CLEAR_CPU_BUFFERS macro. Instead, we provides a
+ * separate version for 32-bit code.
+ */
+	.balign 2
+ENTRY(__verw_ds)
+	.word	__KERNEL_DS
+
+ENTRY(mds_user_clear_cpu_buffers)
+	ALTERNATIVE "ret", "", X86_FEATURE_MDS_USR_CLR
+	verw	__verw_ds
+	ret
+END(mds_user_clear_cpu_buffers)
+
+/*
+ * Interrupt exit functions should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
+/*
+ * Return to user mode is not as complex as all this looks,
+ * but we want the default path for a system call return to
+ * go as quickly as possible which is why some of this is
+ * less clear than it otherwise should be.
+ */
+
+	# userspace resumption stub bypassing syscall exit tracing
+	ALIGN
+	RING0_PTREGS_FRAME
+ret_from_exception:
+	preempt_stop(CLBR_ANY)
+ret_from_intr:
+	GET_THREAD_INFO(%ebp)
+check_userspace:
+	movl PT_EFLAGS(%esp), %eax	# mix EFLAGS and CS
+	movb PT_CS(%esp), %al
+	andl $(X86_EFLAGS_VM | SEGMENT_RPL_MASK), %eax
+	cmpl $USER_RPL, %eax
+	jb resume_kernel		# not returning to v8086 or userspace
+
+ENTRY(resume_userspace)
+	LOCKDEP_SYS_EXIT
+ 	DISABLE_INTERRUPTS(CLBR_ANY)	# make sure we don't miss an interrupt
+					# setting need_resched or sigpending
+					# between sampling and the iret
+	TRACE_IRQS_OFF
+	movl TI_flags(%ebp), %ecx
+	andl $_TIF_WORK_MASK, %ecx	# is there any work to be done on
+					# int/exception return?
+	jne work_pending
+	jmp restore_all
+END(ret_from_exception)
+
+#ifdef CONFIG_PREEMPT
+ENTRY(resume_kernel)
+	DISABLE_INTERRUPTS(CLBR_ANY)
+	cmpl $0,TI_preempt_count(%ebp)	# non-zero preempt_count ?
+	jnz restore_all_kernel
+need_resched:
+	movl TI_flags(%ebp), %ecx	# need_resched set ?
+	testb $_TIF_NEED_RESCHED, %cl
+	jz restore_all_kernel
+	testl $X86_EFLAGS_IF,PT_EFLAGS(%esp)	# interrupts off (exception path) ?
+	jz restore_all_kernel
+	call preempt_schedule_irq
+	jmp need_resched
+END(resume_kernel)
+#endif
+	CFI_ENDPROC
+/*
+ * End of kprobes section
+ */
+	.popsection
+
+/* SYSENTER_RETURN points to after the "sysenter" instruction in
+   the vsyscall page.  See vsyscall-sysentry.S, which defines the symbol.  */
+
+	# sysenter call handler stub
+ENTRY(ia32_sysenter_target)
+	CFI_STARTPROC simple
+	CFI_SIGNAL_FRAME
+	CFI_DEF_CFA esp, 0
+	CFI_REGISTER esp, ebp
+	/*
+	 * On entry-stack with all userspace-regs live - save and
+	 * restore eflags and %eax to use it as scratch-reg for the cr3
+	 * switch.
+	 */
+	SWITCH_TO_KERNEL_CR3 scratch_reg=%eax noclobber=1
+
+	/* Stack empty again, switch to task stack */
+	movl TSS_entry_stack(%esp),%esp
+sysenter_past_esp:
+	/*
+	 * Interrupts are disabled here, but we can't trace it until
+	 * enough kernel state to call TRACE_IRQS_OFF can be called - but
+	 * we immediately enable interrupts at that point anyway.
+	 */
+	pushl $(__USER_DS)
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET ss, 0*/
+	pushl %ebp
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET esp, 0
+	pushfl
+	orl $X86_EFLAGS_IF, (%esp)
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $(__USER_CS)
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET cs, 0*/
+	/*
+	 * Push current_thread_info()->sysenter_return to the stack.
+	 * A tiny bit of offset fixup is necessary - 4*4 means the 4 words
+	 * pushed above; +8 corresponds to copy_thread's esp0 setting.
+	 */
+	pushl (TI_sysenter_return-THREAD_SIZE+8+4*4)(%esp)
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET eip, 0
+
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL		/* Stack has already been switched */
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%eax
+	movl PT_EAX(%esp), %eax		# Restore %eax
+
+	ENABLE_INTERRUPTS(CLBR_NONE)
+
+/*
+ * Load the potential sixth argument from user stack.
+ * Careful about security.
+ */
+	cmpl $__PAGE_OFFSET-3,%ebp
+	jae syscall_fault
+1:	movl (%ebp),%ebp
+	movl %ebp,PT_EBP(%esp)
+.section __ex_table,"a"
+	.align 4
+	.long 1b,syscall_fault
+.previous
+
+	GET_THREAD_INFO(%ebp)
+
+	testl $_TIF_WORK_SYSCALL_ENTRY,TI_flags(%ebp)
+	jnz sysenter_audit
+sysenter_do_call:
+	cmpl $(nr_syscalls), %eax
+	jae syscall_badsys
+	movl sys_call_table(,%eax,4), %eax
+	CALL_NOSPEC %eax
+	movl %eax,PT_EAX(%esp)
+	LOCKDEP_SYS_EXIT
+	DISABLE_INTERRUPTS(CLBR_ANY)
+	TRACE_IRQS_OFF
+	movl TI_flags(%ebp), %ecx
+	testl $_TIF_ALLWORK_MASK, %ecx
+	jne sysexit_audit
+sysenter_exit:
+/* if something modifies registers it must also disable sysexit */
+	TRACE_IRQS_ON
+	IBRS_EXIT_CLOBBER
+	SWITCH_TO_ENTRY_STACK	/* Switch to per-cpu entry stack */
+	movl PER_CPU_VAR(kaiser_enabled_pcp), %eax
+	movl PT_EIP(%esp), %edx
+	movl PT_OLDESP(%esp), %ecx
+	xorl %ebp,%ebp
+1:	mov  PT_FS(%esp), %fs
+	PTGS_TO_GS
+
+	/* Segments are restored - switch to user cr3 */
+	SWITCH_TO_USER_CR3 scratch_reg=%eax
+
+	/*
+	 * Restore %eax, as well as %ebx, %edi and %esi which may be
+	 * clobbered in the trampoline stack switching process.
+	 */
+	movl PT_EAX(%esp), %eax
+	movl PT_EBX(%esp), %ebx
+	movl PT_EDI(%esp), %edi
+	movl PT_ESI(%esp), %esi
+	call mds_user_clear_cpu_buffers
+
+	ENABLE_INTERRUPTS_SYSEXIT
+
+#ifdef CONFIG_AUDITSYSCALL
+sysenter_audit:
+	testl $(_TIF_WORK_SYSCALL_ENTRY & ~_TIF_SYSCALL_AUDIT),TI_flags(%ebp)
+	jnz syscall_trace_entry
+	addl $4,%esp
+	CFI_ADJUST_CFA_OFFSET -4
+	/* %esi already in 8(%esp)	   6th arg: 4th syscall arg */
+	/* %edx already in 4(%esp)	   5th arg: 3rd syscall arg */
+	/* %ecx already in 0(%esp)	   4th arg: 2nd syscall arg */
+	movl %ebx,%ecx			/* 3rd arg: 1st syscall arg */
+	movl %eax,%edx			/* 2nd arg: syscall number */
+	movl $AUDIT_ARCH_I386,%eax	/* 1st arg: audit arch */
+	call audit_syscall_entry
+	pushl %ebx
+	CFI_ADJUST_CFA_OFFSET 4
+	movl PT_EAX(%esp),%eax		/* reload syscall number */
+	jmp sysenter_do_call
+
+sysexit_audit:
+	testl $(_TIF_ALLWORK_MASK & ~_TIF_SYSCALL_AUDIT), %ecx
+	jne syscall_exit_work
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_ANY)
+	movl %eax,%edx		/* second arg, syscall return value */
+	cmpl $-MAX_ERRNO,%eax	/* is it an error ? */
+	setbe %al		/* 1 if so, 0 if not */
+	movzbl %al,%eax		/* zero-extend that */
+	call __audit_syscall_exit
+	DISABLE_INTERRUPTS(CLBR_ANY)
+	TRACE_IRQS_OFF
+	movl TI_flags(%ebp), %ecx
+	testl $(_TIF_ALLWORK_MASK & ~_TIF_SYSCALL_AUDIT), %ecx
+	jne syscall_exit_work
+	movl PT_EAX(%esp),%eax	/* reload syscall return value */
+	jmp sysenter_exit
+#endif
+
+	CFI_ENDPROC
+.pushsection .fixup,"ax"
+2:	movl $0,PT_FS(%esp)
+	jmp 1b
+.section __ex_table,"a"
+	.align 4
+	.long 1b,2b
+.popsection
+	PTGS_TO_GS_EX
+ENDPROC(ia32_sysenter_target)
+
+.macro CHECK_AND_APPLY_ESPFIX
+	movl PT_EFLAGS(%esp), %eax	# mix EFLAGS, SS and CS
+	# Warning: PT_OLDSS(%esp) contains the wrong/random values if we
+	# are returning to the kernel.
+	# See comments in process.c:copy_thread() for details.
+	movb PT_OLDSS(%esp), %ah
+	movb PT_CS(%esp), %al
+	andl $(X86_EFLAGS_VM | (SEGMENT_TI_MASK << 8) | SEGMENT_RPL_MASK), %eax
+	cmpl $((SEGMENT_LDT << 8) | USER_RPL), %eax
+	jne .Lend_\@			# returning to user-space with LDT SS
+
+	larl PT_OLDSS(%esp), %eax
+	jnz .Lend_\@
+	testl $0x00400000, %eax		# returning to 32bit stack?
+	jnz .Lend_\@			# allright, normal return
+
+#ifdef CONFIG_PARAVIRT
+	/*
+	 * The kernel can't run on a non-flat stack if paravirt mode
+	 * is active.  Rather than try to fixup the high bits of
+	 * ESP, bypass this code entirely.  This may break DOSemu
+	 * and/or Wine support in a paravirt VM, although the option
+	 * is still available to implement the setting of the high
+	 * 16-bits in the INTERRUPT_RETURN paravirt-op.
+	 */
+	cmpl $0, pv_info+PARAVIRT_enabled
+	jne .Lend_\@
+#endif
+
+/*
+ * Setup and switch to ESPFIX stack
+ *
+ * We're returning to userspace with a 16 bit stack. The CPU will not
+ * restore the high word of ESP for us on executing iret... This is an
+ * "official" bug of all the x86-compatible CPUs, which we can work
+ * around to make dosemu and wine happy. We do this by preloading the
+ * high word of ESP with the high word of the userspace ESP while
+ * compensating for the offset by changing to the ESPFIX segment with
+ * a base address that matches for the difference.
+ */
+	mov %esp, %edx			/* load kernel esp */
+	mov PT_OLDESP(%esp), %eax	/* load userspace esp */
+	mov %dx, %ax			/* eax: new kernel esp */
+	sub %eax, %edx			/* offset (low word is 0) */
+	PER_CPU(gdt_page, %ebx)
+	shr $16, %edx
+	mov %dl, GDT_ENTRY_ESPFIX_SS * 8 + 4(%ebx) /* bits 16..23 */
+	mov %dh, GDT_ENTRY_ESPFIX_SS * 8 + 7(%ebx) /* bits 24..31 */
+	pushl $__ESPFIX_SS
+	CFI_ADJUST_CFA_OFFSET 4
+	push %eax			/* new kernel esp */
+	CFI_ADJUST_CFA_OFFSET 4
+	/* Disable interrupts, but do not irqtrace this section: we
+	 * will soon execute iret and the tracer was already set to
+	 * the irqstate after the iret */
+	DISABLE_INTERRUPTS(CLBR_EAX)
+	lss (%esp), %esp		/* switch to espfix segment */
+	CFI_ADJUST_CFA_OFFSET -8
+.Lend_\@:
+.endm
+
+/*
+ * syscall stub including irq exit should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
+	# system call handler stub
+ENTRY(system_call)
+	RING0_INT_FRAME			# can't unwind into user space anyway
+	pushl %eax			# save orig_eax
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL switch_stacks=1
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%eax
+	movl PT_EAX(%esp), %eax		# Restore %eax
+
+	ENABLE_INTERRUPTS(CLBR_ANY & ~CLBR_EAX)
+	GET_THREAD_INFO(%ebp)
+					# system call tracing in operation / emulation
+	testl $_TIF_WORK_SYSCALL_ENTRY,TI_flags(%ebp)
+	jnz syscall_trace_entry
+	cmpl $(nr_syscalls), %eax
+	jae syscall_badsys
+syscall_call:
+	movl sys_call_table(,%eax,4), %eax
+	CALL_NOSPEC %eax
+	movl %eax,PT_EAX(%esp)		# store the return value
+syscall_exit:
+	LOCKDEP_SYS_EXIT
+	DISABLE_INTERRUPTS(CLBR_ANY)	# make sure we don't miss an interrupt
+					# setting need_resched or sigpending
+					# between sampling and the iret
+	TRACE_IRQS_OFF
+	movl TI_flags(%ebp), %ecx
+	testl $_TIF_ALLWORK_MASK, %ecx	# current->work
+	jne syscall_exit_work
+
+restore_all:
+	/*
+	 * In the special case that the caller is from kernel space,
+	 * we should use restore_all_kernel for return.
+	 */
+	testl $SEGMENT_RPL_MASK, PT_CS(%esp)
+	jz restore_all_kernel
+
+	TRACE_IRQS_IRET
+	IBRS_EXIT_CLOBBER
+	SWITCH_TO_ENTRY_STACK
+	CHECK_AND_APPLY_ESPFIX
+	RESTORE_REGS pop=4 switch_cr3=1	# skip orig_eax/error_code
+	call mds_user_clear_cpu_buffers
+	CFI_ADJUST_CFA_OFFSET -4
+irq_return:
+	INTERRUPT_RETURN
+
+restore_all_kernel:
+	TRACE_IRQS_IRET
+	PARANOID_EXIT_TO_KERNEL_MODE
+	RESTORE_REGS 4
+	jmp irq_return
+
+.section .fixup,"ax"
+ENTRY(iret_exc)
+	pushl $0			# no error code
+	pushl $do_iret_error
+	jmp error_code
+.previous
+.section __ex_table,"a"
+	.align 4
+	.long irq_return,iret_exc
+.previous
+	CFI_ENDPROC
+ENDPROC(system_call)
+
+	# perform work that needs to be done immediately before resumption
+	ALIGN
+	RING0_PTREGS_FRAME		# can't unwind into user space anyway
+work_pending:
+	testb $_TIF_NEED_RESCHED, %cl
+	jz work_notifysig
+work_resched:
+	call schedule
+	LOCKDEP_SYS_EXIT
+	DISABLE_INTERRUPTS(CLBR_ANY)	# make sure we don't miss an interrupt
+					# setting need_resched or sigpending
+					# between sampling and the iret
+	TRACE_IRQS_OFF
+	movl TI_flags(%ebp), %ecx
+	andl $_TIF_WORK_MASK, %ecx	# is there any work to be done other
+					# than syscall tracing?
+	jz restore_all
+	testb $_TIF_NEED_RESCHED, %cl
+	jnz work_resched
+
+work_notifysig:				# deal with pending signals and
+					# notify-resume requests
+#ifdef CONFIG_VM86
+	testl $X86_EFLAGS_VM, PT_EFLAGS(%esp)
+	movl %esp, %eax
+	jne work_notifysig_v86		# returning to kernel-space or
+					# vm86-space
+	xorl %edx, %edx
+	call do_notify_resume
+	jmp resume_userspace_sig
+
+	ALIGN
+work_notifysig_v86:
+	pushl %ecx			# save ti_flags for do_notify_resume
+	CFI_ADJUST_CFA_OFFSET 4
+	call save_v86_state		# %eax contains pt_regs pointer
+	popl %ecx
+	CFI_ADJUST_CFA_OFFSET -4
+	movl %eax, %esp
+#else
+	movl %esp, %eax
+#endif
+	xorl %edx, %edx
+	call do_notify_resume
+	jmp resume_userspace_sig
+END(work_pending)
+
+	# perform syscall exit tracing
+	ALIGN
+syscall_trace_entry:
+	movl $-ENOSYS,PT_EAX(%esp)
+	movl %esp, %eax
+	call syscall_trace_enter
+	/* What it returned is what we'll actually use.  */
+	cmpl $(nr_syscalls), %eax
+	jnae syscall_call
+	jmp syscall_exit
+END(syscall_trace_entry)
+
+	# perform syscall exit tracing
+	ALIGN
+syscall_exit_work:
+	testl $_TIF_WORK_SYSCALL_EXIT, %ecx
+	jz work_pending
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_ANY)	# could let syscall_trace_leave() call
+					# schedule() instead
+	movl %esp, %eax
+	call syscall_trace_leave
+	jmp resume_userspace
+END(syscall_exit_work)
+	CFI_ENDPROC
+
+	RING0_INT_FRAME			# can't unwind into user space anyway
+syscall_fault:
+	GET_THREAD_INFO(%ebp)
+	movl $-EFAULT,PT_EAX(%esp)
+	jmp resume_userspace
+END(syscall_fault)
+
+syscall_badsys:
+	movl $-ENOSYS,PT_EAX(%esp)
+	jmp resume_userspace
+END(syscall_badsys)
+	CFI_ENDPROC
+/*
+ * End of kprobes section
+ */
+	.popsection
+
+/*
+ * System calls that need a pt_regs pointer.
+ */
+#define PTREGSCALL(name) \
+	ALIGN; \
+ptregs_##name: \
+	leal 4(%esp),%eax; \
+	jmp sys_##name;
+
+PTREGSCALL(iopl)
+PTREGSCALL(fork)
+PTREGSCALL(clone)
+PTREGSCALL(vfork)
+PTREGSCALL(execve)
+PTREGSCALL(sigaltstack)
+PTREGSCALL(sigreturn)
+PTREGSCALL(rt_sigreturn)
+PTREGSCALL(vm86)
+PTREGSCALL(vm86old)
+
+.macro FIXUP_ESPFIX_STACK
+/*
+ * Switch back for ESPFIX stack to the normal zerobased stack
+ *
+ * We can't call C functions using the ESPFIX stack. This code reads
+ * the high word of the segment base from the GDT and swiches to the
+ * normal stack and adjusts ESP with the matching offset.
+ */
+	/* fixup the stack */
+	PER_CPU(gdt_page, %ebx)
+	mov GDT_ENTRY_ESPFIX_SS * 8 + 4(%ebx), %al /* bits 16..23 */
+	mov GDT_ENTRY_ESPFIX_SS * 8 + 7(%ebx), %ah /* bits 24..31 */
+	shl $16, %eax
+	addl %esp, %eax			/* the adjusted stack pointer */
+	pushl $__KERNEL_DS
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	lss (%esp), %esp		/* switch to the normal stack segment */
+	CFI_ADJUST_CFA_OFFSET -8
+.endm
+.macro UNWIND_ESPFIX_STACK
+	movl %ss, %eax
+	/* see if on espfix stack */
+	cmpw $__ESPFIX_SS, %ax
+	jne 27f
+	movl $__KERNEL_DS, %eax
+	movl %eax, %ds
+	movl %eax, %es
+	/* switch to normal stack */
+	FIXUP_ESPFIX_STACK
+27:
+.endm
+
+/*
+ * Build the entry stubs and pointer table with some assembler magic.
+ * We pack 7 stubs into a single 32-byte chunk, which will fit in a
+ * single cache line on all modern x86 implementations.
+ */
+.section .init.rodata,"a"
+ENTRY(interrupt)
+.section .entry.text, "ax"
+	.p2align 5
+	.p2align CONFIG_X86_L1_CACHE_SHIFT
+ENTRY(irq_entries_start)
+	RING0_INT_FRAME
+vector=FIRST_EXTERNAL_VECTOR
+.rept (NR_VECTORS-FIRST_EXTERNAL_VECTOR+6)/7
+	.balign 32
+  .rept	7
+    .if vector < NR_VECTORS
+      .if vector <> FIRST_EXTERNAL_VECTOR
+	CFI_ADJUST_CFA_OFFSET -4
+      .endif
+1:	pushl $(~vector+0x80)	/* Note: always in signed byte range */
+	CFI_ADJUST_CFA_OFFSET 4
+      .if ((vector-FIRST_EXTERNAL_VECTOR)%7) <> 6
+	jmp 2f
+      .endif
+      .previous
+	.long 1b
+      .section .entry.text, "ax"
+vector=vector+1
+    .endif
+  .endr
+2:	jmp common_interrupt
+.endr
+END(irq_entries_start)
+
+.previous
+END(interrupt)
+.previous
+
+/*
+ * the CPU automatically disables interrupts when executing an IRQ vector,
+ * so IRQ-flags tracing has to follow that:
+ */
+	.p2align CONFIG_X86_L1_CACHE_SHIFT
+common_interrupt:
+	addl $-0x80,(%esp)	/* Adjust vector into the [-256,-1] range */
+	SAVE_ALL switch_stacks=1
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%eax
+	TRACE_IRQS_OFF
+	movl %esp,%eax
+	call do_IRQ
+	jmp ret_from_intr
+ENDPROC(common_interrupt)
+	CFI_ENDPROC
+
+/*
+ *  Irq entries should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
+#define BUILD_INTERRUPT3(name, nr, fn)	\
+ENTRY(name)				\
+	RING0_INT_FRAME;		\
+	pushl $~(nr);			\
+	CFI_ADJUST_CFA_OFFSET 4;	\
+	SAVE_ALL switch_stacks=1;	\
+	IBRS_ENTRY_CLOBBER;		\
+	FILL_RETURN_BUFFER_CLOBBER reg=%eax;\
+	TRACE_IRQS_OFF			\
+	movl %esp,%eax;			\
+	call fn;			\
+	jmp ret_from_intr;		\
+	CFI_ENDPROC;			\
+ENDPROC(name)
+
+
+#ifdef CONFIG_TRACING
+#define TRACE_BUILD_INTERRUPT(name, nr)		\
+	BUILD_INTERRUPT3(trace_##name, nr, smp_trace_##name)
+#else
+#define TRACE_BUILD_INTERRUPT(name, nr)
+#endif
+
+#define BUILD_INTERRUPT(name, nr) \
+	BUILD_INTERRUPT3(name, nr, smp_##name); \
+	TRACE_BUILD_INTERRUPT(name, nr)
+
+/* The include is where all of the SMP etc. interrupts come from */
+#include <asm/entry_arch.h>
+
+ENTRY(coprocessor_error)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_coprocessor_error
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(coprocessor_error)
+
+ENTRY(simd_coprocessor_error)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+#ifdef CONFIG_X86_INVD_BUG
+	/* AMD 486 bug: invd from userspace calls exception 19 instead of #GP */
+661:	pushl $do_general_protection
+662:
+.section .altinstructions,"a"
+	altinstruction_entry 661b, 663f, X86_FEATURE_XMM, 662b-661b, 664f-663f, 0
+.previous
+.section .altinstr_replacement,"ax"
+663:	pushl $do_simd_coprocessor_error
+664:
+.previous
+#else
+	pushl $do_simd_coprocessor_error
+#endif
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(simd_coprocessor_error)
+
+ENTRY(device_not_available)
+	RING0_INT_FRAME
+	pushl $-1			# mark this as an int
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_device_not_available
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(device_not_available)
+
+#ifdef CONFIG_PARAVIRT
+ENTRY(native_iret)
+	iret
+.section __ex_table,"a"
+	.align 4
+	.long native_iret, iret_exc
+.previous
+END(native_iret)
+
+ENTRY(native_irq_enable_sysexit)
+	sti
+	sysexit
+END(native_irq_enable_sysexit)
+#endif
+
+ENTRY(overflow)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_overflow
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(overflow)
+
+ENTRY(bounds)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_bounds
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(bounds)
+
+ENTRY(invalid_op)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_invalid_op
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(invalid_op)
+
+ENTRY(coprocessor_segment_overrun)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_coprocessor_segment_overrun
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(coprocessor_segment_overrun)
+
+ENTRY(invalid_TSS)
+	RING0_EC_FRAME
+	pushl $do_invalid_TSS
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(invalid_TSS)
+
+ENTRY(segment_not_present)
+	RING0_EC_FRAME
+	pushl $do_segment_not_present
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(segment_not_present)
+
+ENTRY(stack_segment)
+	RING0_EC_FRAME
+	pushl $do_stack_segment
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(stack_segment)
+
+ENTRY(alignment_check)
+	RING0_EC_FRAME
+	pushl $do_alignment_check
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(alignment_check)
+
+ENTRY(divide_error)
+	RING0_INT_FRAME
+	pushl $0			# no error code
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_divide_error
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(divide_error)
+
+#ifdef CONFIG_X86_MCE
+ENTRY(machine_check)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl machine_check_vector
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(machine_check)
+#endif
+
+ENTRY(spurious_interrupt_bug)
+	RING0_INT_FRAME
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl $do_spurious_interrupt_bug
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(spurious_interrupt_bug)
+/*
+ * End of kprobes section
+ */
+	.popsection
+
+ENTRY(kernel_thread_helper)
+	pushl $0		# fake return address for unwinder
+	CFI_STARTPROC
+	movl %edx,%eax
+	push %edx
+	CFI_ADJUST_CFA_OFFSET 4
+	CALL_NOSPEC %ebx
+	push %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	call do_exit
+	ud2			# padding for call trace
+	CFI_ENDPROC
+ENDPROC(kernel_thread_helper)
+
+#ifdef CONFIG_XEN
+/* Xen doesn't set %esp to be precisely what the normal sysenter
+   entrypoint expects, so fix it up before using the normal path. */
+ENTRY(xen_sysenter_target)
+	RING0_INT_FRAME
+	addl $5*4, %esp		/* remove xen-provided frame */
+	CFI_ADJUST_CFA_OFFSET -5*4
+	jmp sysenter_past_esp
+	CFI_ENDPROC
+
+ENTRY(xen_hypervisor_callback)
+	CFI_STARTPROC
+	pushl $0
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL
+	TRACE_IRQS_OFF
+
+	/* Check to see if we got the event in the critical
+	   region in xen_iret_direct, after we've reenabled
+	   events and checked for pending events.  This simulates
+	   iret instruction's behaviour where it delivers a
+	   pending interrupt when enabling interrupts. */
+	movl PT_EIP(%esp),%eax
+	cmpl $xen_iret_start_crit,%eax
+	jb   1f
+	cmpl $xen_iret_end_crit,%eax
+	jae  1f
+
+	jmp  xen_iret_crit_fixup
+
+ENTRY(xen_do_upcall)
+1:	mov %esp, %eax
+	call xen_evtchn_do_upcall
+	jmp  ret_from_intr
+	CFI_ENDPROC
+ENDPROC(xen_hypervisor_callback)
+
+# Hypervisor uses this for application faults while it executes.
+# We get here for two reasons:
+#  1. Fault while reloading DS, ES, FS or GS
+#  2. Fault while executing IRET
+# Category 1 we fix up by reattempting the load, and zeroing the segment
+# register if the load fails.
+# Category 2 we fix up by jumping to do_iret_error. We cannot use the
+# normal Linux return path in this case because if we use the IRET hypercall
+# to pop the stack frame we end up in an infinite loop of failsafe callbacks.
+# We distinguish between categories by maintaining a status value in EAX.
+ENTRY(xen_failsafe_callback)
+	CFI_STARTPROC
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	movl $1,%eax
+1:	mov 4(%esp),%ds
+2:	mov 8(%esp),%es
+3:	mov 12(%esp),%fs
+4:	mov 16(%esp),%gs
+	testl %eax,%eax
+	popl %eax
+	CFI_ADJUST_CFA_OFFSET -4
+	lea 16(%esp),%esp
+	CFI_ADJUST_CFA_OFFSET -16
+	jz 5f
+	jmp iret_exc		# EAX != 0 => Category 2 (Bad IRET)
+5:	pushl $0		# EAX == 0 => Category 1 (Bad segment)
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL
+	jmp ret_from_exception
+	CFI_ENDPROC
+
+.section .fixup,"ax"
+6:	xorl %eax,%eax
+	movl %eax,4(%esp)
+	jmp 1b
+7:	xorl %eax,%eax
+	movl %eax,8(%esp)
+	jmp 2b
+8:	xorl %eax,%eax
+	movl %eax,12(%esp)
+	jmp 3b
+9:	xorl %eax,%eax
+	movl %eax,16(%esp)
+	jmp 4b
+.previous
+.section __ex_table,"a"
+	.align 4
+	.long 1b,6b
+	.long 2b,7b
+	.long 3b,8b
+	.long 4b,9b
+.previous
+ENDPROC(xen_failsafe_callback)
+
+BUILD_INTERRUPT3(xen_hvm_callback_vector, HYPERVISOR_CALLBACK_VECTOR,
+		xen_evtchn_do_upcall)
+
+#endif	/* CONFIG_XEN */
+
+#if defined(CONFIG_HYPERV) || defined(CONFIG_HYPERV_MODULE)
+
+BUILD_INTERRUPT3(hyperv_callback_vector, HYPERVISOR_CALLBACK_VECTOR,
+	hyperv_vector_handler)
+
+#endif /* CONFIG_HYPERV */
+
+#ifdef CONFIG_FUNCTION_TRACER
+#ifdef CONFIG_DYNAMIC_FTRACE
+
+ENTRY(mcount)
+	ret
+END(mcount)
+
+ENTRY(ftrace_caller)
+	cmpl $0, function_trace_stop
+	jne  ftrace_stub
+
+	pushl %eax
+	pushl %ecx
+	pushl %edx
+	movl 0xc(%esp), %eax
+	movl 0x4(%ebp), %edx
+	subl $MCOUNT_INSN_SIZE, %eax
+
+.globl ftrace_call
+ftrace_call:
+	call ftrace_stub
+
+	popl %edx
+	popl %ecx
+	popl %eax
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+.globl ftrace_graph_call
+ftrace_graph_call:
+	jmp ftrace_stub
+#endif
+
+.globl ftrace_stub
+ftrace_stub:
+	ret
+END(ftrace_caller)
+
+#else /* ! CONFIG_DYNAMIC_FTRACE */
+
+ENTRY(mcount)
+	cmpl $0, function_trace_stop
+	jne  ftrace_stub
+
+	cmpl $ftrace_stub, ftrace_trace_function
+	jnz trace
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+	cmpl $ftrace_stub, ftrace_graph_return
+	jnz ftrace_graph_caller
+
+	cmpl $ftrace_graph_entry_stub, ftrace_graph_entry
+	jnz ftrace_graph_caller
+#endif
+.globl ftrace_stub
+ftrace_stub:
+	ret
+
+	/* taken from glibc */
+trace:
+	pushl %eax
+	pushl %ecx
+	pushl %edx
+	movl 0xc(%esp), %eax
+	movl 0x4(%ebp), %edx
+	subl $MCOUNT_INSN_SIZE, %eax
+
+	movl ftrace_trace_function, %ecx
+	CALL_NOSPEC %ecx
+
+	popl %edx
+	popl %ecx
+	popl %eax
+	jmp ftrace_stub
+END(mcount)
+#endif /* CONFIG_DYNAMIC_FTRACE */
+#endif /* CONFIG_FUNCTION_TRACER */
+
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+ENTRY(ftrace_graph_caller)
+	cmpl $0, function_trace_stop
+	jne ftrace_stub
+
+	pushl %eax
+	pushl %ecx
+	pushl %edx
+	movl 0xc(%esp), %edx
+	lea 0x4(%ebp), %eax
+	movl (%ebp), %ecx
+	subl $MCOUNT_INSN_SIZE, %edx
+	call prepare_ftrace_return
+	popl %edx
+	popl %ecx
+	popl %eax
+	ret
+END(ftrace_graph_caller)
+
+.globl return_to_handler
+return_to_handler:
+	pushl $0
+	pushl %eax
+	pushl %ecx
+	pushl %edx
+	movl %ebp, %eax
+	call ftrace_return_to_handler
+	movl %eax, 0xc(%esp)
+	popl %edx
+	popl %ecx
+	popl %eax
+	ret
+#endif
+
+.section .rodata,"a"
+#include "syscall_table_32.S"
+
+syscall_table_size=(.-sys_call_table)
+
+/*
+ * Some functions should be protected against kprobes
+ */
+	.pushsection .kprobes.text, "ax"
+
+ENTRY(page_fault)
+	RING0_EC_FRAME
+	pushl $do_page_fault
+	CFI_ADJUST_CFA_OFFSET 4
+	ALIGN
+error_code:
+	/* the function address is in %gs's slot on the stack */
+	pushl %fs
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET fs, 0*/
+	pushl %es
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET es, 0*/
+	pushl %ds
+	CFI_ADJUST_CFA_OFFSET 4
+	/*CFI_REL_OFFSET ds, 0*/
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET eax, 0
+
+	movl $(__USER_DS), %eax
+	movl %eax, %ds
+	movl %eax, %es
+	movl $(__KERNEL_PERCPU), %eax
+	movl %eax, %fs
+
+	pushl %ebp
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ebp, 0
+	pushl %edi
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET edi, 0
+	pushl %esi
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET esi, 0
+	pushl %edx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET edx, 0
+	pushl %ecx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ecx, 0
+	pushl %ebx
+	CFI_ADJUST_CFA_OFFSET 4
+	CFI_REL_OFFSET ebx, 0
+	SWITCH_TO_KERNEL_STACK
+
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%ecx
+
+	cld
+	UNWIND_ESPFIX_STACK
+	GS_TO_REG %ecx
+	movl PT_GS(%esp), %edi		# get the function address
+	movl PT_ORIG_EAX(%esp), %edx	# get the error code
+	movl $-1, PT_ORIG_EAX(%esp)	# no syscall to restart
+	REG_TO_PTGS %ecx
+	SET_KERNEL_GS %ecx
+	TRACE_IRQS_OFF
+	movl %esp,%eax			# pt_regs pointer
+	CALL_NOSPEC %edi
+	jmp ret_from_exception
+	CFI_ENDPROC
+END(page_fault)
+
+ENTRY(debug)
+	/*
+	 * #DB can happen at the first instruction of
+	 * ia32_sysenter_target, or in Xen's SYSENTER prologue.  If this
+	 * happens, then we will be running on a very small stack.  We
+	 * need to detect this condition and switch to the thread
+	 * stack before calling any C code at all.
+	 *
+	 * If you edit this code, keep in mind that NMIs can happen in here.
+	 */
+	RING0_INT_FRAME
+	pushl $-1			# mark this as an int
+	CFI_ADJUST_CFA_OFFSET 4
+
+	/*
+	 * #DB from userspace is treated as a regular exception.
+	 * N.B. esp points to the PT_GS slot at this point.
+	 */
+	testl $SEGMENT_RPL_MASK, PT_CS-PT_GS(%esp)
+	jnz   .Ldebug_userspace
+
+	SAVE_ALL_PARANOID cr3_reg=%edi
+	IBRS_ENTRY_SAVE_AND_CLOBBER save_reg=%esi
+
+	/* The trampoline stack is big enough for stuffing RSB */
+	FILL_RETURN_BUFFER_CLOBBER reg=%edx
+
+	xorl %edx,%edx			# error code 0
+	movl %esp,%eax			# pt_regs pointer
+
+	/* Are we currently on the TSS trampoline stack? */
+	PER_CPU(init_tss + TSS_stack + TSS_stack_size, %ecx)
+	subl %eax, %ecx		/* ecx = (end of TSS stack) - esp */
+	cmpl $TSS_stack_size, %ecx
+	jb   .Ldebug_from_tss_stack
+
+	TRACE_IRQS_OFF
+	call do_debug
+	jmp .Lparanoid_return
+
+.Ldebug_from_tss_stack:
+	/* We're on the SYSENTER stack.  Switch to the task stack. */
+	movl    %esp, %ebp
+	movl    PER_CPU_VAR(init_tss + TSS_kernel_stack), %esp
+
+	TRACE_IRQS_OFF
+	call do_debug
+	movl %ebp, %esp
+	jmp .Lparanoid_return
+
+.Ldebug_userspace:
+	SAVE_ALL switch_stacks=1
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%eax
+	TRACE_IRQS_OFF
+	xorl %edx,%edx			# error code 0
+	movl %esp,%eax			# pt_regs pointer
+	call do_debug
+	jmp  ret_from_exception
+
+	CFI_ENDPROC
+END(debug)
+
+/*
+ * NMI is doubly nasty. It can happen _while_ we're handling
+ * a debug fault, and the debug fault hasn't yet been able to
+ * clear up the stack. So we first check whether we got  an
+ * NMI on the sysenter entry path, but after that we need to
+ * check whether we got an NMI on the debug path where the debug
+ * fault happened on the sysenter path.
+ */
+ENTRY(nmi)
+	RING0_INT_FRAME
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	movl %ss, %eax
+	cmpw $__ESPFIX_SS, %ax
+	popl %eax
+	CFI_ADJUST_CFA_OFFSET -4
+	je nmi_espfix_stack
+
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL_PARANOID cr3_reg=%edi
+	IBRS_ENTRY_SAVE_AND_CLOBBER save_reg=%esi
+
+	/* The trampoline stack is big enough for stuffing RSB */
+	FILL_RETURN_BUFFER_CLOBBER reg=%edx
+
+	xorl %edx,%edx		# zero error code
+	movl %esp,%eax		# pt_regs pointer
+
+	/* Are we currently on the TSS trampoline stack? */
+	PER_CPU(init_tss + TSS_stack + TSS_stack_size, %ecx)
+	subl %eax, %ecx		/* ecx = (end of TSS stack) - esp */
+	cmpl $TSS_stack_size, %ecx
+	jb   .Lnmi_from_tss_stack
+
+	/* Not on TSS trampoline stack. */
+	call do_nmi
+	jmp .Lparanoid_return
+
+.Lnmi_from_tss_stack:
+	/*
+	 * We're on the SYSENTER stack.  Switch off.  No one (not even debug)
+	 * is using the thread stack right now, so it's safe for us to use it.
+	 */
+	movl	%esp, %ebp
+	movl	PER_CPU_VAR(init_tss + TSS_kernel_stack), %esp
+	call	do_nmi
+	movl	%ebp, %esp
+
+.Lparanoid_return:
+	CHECK_AND_APPLY_ESPFIX
+	IBRS_EXIT_RESTORE_CLOBBER save_reg=%esi
+	RESTORE_ALL_PARANOID cr3_reg=%edi pop=4 # skip orig_eax/error_code
+	CFI_ADJUST_CFA_OFFSET -4
+	jmp	irq_return
+
+nmi_espfix_stack:
+	/* We have a RING0_INT_FRAME here.
+	 *
+	 * create the pointer to lss back
+	 */
+	pushl %ss
+	CFI_ADJUST_CFA_OFFSET 4
+	pushl %esp
+	CFI_ADJUST_CFA_OFFSET 4
+	addl $4, (%esp)
+	/* copy the iret frame of 12 bytes */
+	.rept 3
+	pushl 16(%esp)
+	CFI_ADJUST_CFA_OFFSET 4
+	.endr
+	pushl %eax
+	CFI_ADJUST_CFA_OFFSET 4
+	SAVE_ALL_PARANOID cr3_reg=%edi
+	IBRS_ENTRY_SAVE_AND_CLOBBER save_reg=%esi
+	FILL_RETURN_BUFFER_CLOBBER reg=%edx
+	FIXUP_ESPFIX_STACK		# %eax == %esp
+	xorl %edx,%edx			# zero error code
+	call do_nmi
+	IBRS_EXIT_RESTORE_CLOBBER save_reg=%esi
+	RESTORE_ALL_PARANOID cr3_reg=%edi
+	lss 12+4(%esp), %esp		# back to espfix stack
+	CFI_ADJUST_CFA_OFFSET -24
+	jmp irq_return
+	CFI_ENDPROC
+END(nmi)
+
+ENTRY(int3)
+	RING0_INT_FRAME
+	pushl $-1			# mark this as an int
+	CFI_ADJUST_CFA_OFFSET 4
+
+	SAVE_ALL switch_stacks=1
+	IBRS_ENTRY_CLOBBER
+	FILL_RETURN_BUFFER_CLOBBER reg=%edx
+	TRACE_IRQS_OFF
+	xorl %edx,%edx		# zero error code
+	movl %esp,%eax		# pt_regs pointer
+	call do_int3
+	jmp ret_from_exception
+	CFI_ENDPROC
+END(int3)
+
+ENTRY(general_protection)
+	RING0_EC_FRAME
+	pushl $do_general_protection
+	CFI_ADJUST_CFA_OFFSET 4
+	jmp error_code
+	CFI_ENDPROC
+END(general_protection)
+
+/*
+ * End of kprobes section
+ */
+	.popsection

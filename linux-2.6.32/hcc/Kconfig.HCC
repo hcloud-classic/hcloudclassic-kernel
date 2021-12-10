@@ -1,0 +1,431 @@
+menu "Cluster support"
+
+config HCC
+	bool "Add the HCC support"
+	depends on PREEMPT_NONE && !KEYS && !COMPAT
+	default y
+	select HCC_TOOLS if !HCC_DEVEL
+	select HCC_COMMUNICATION_FRAMEWORK if !HCC_DEVEL
+	select HCC_GHOTPLUG if !HCC_DEVEL
+	select HCC_GDM if !HCC_DEVEL
+	select HCC_GCAP if !HCC_DEVEL
+	select HCC_PROCFS if !HCC_DEVEL
+	select HCC_GMM if !HCC_DEVEL
+	select HCC_DVFS if !HCC_DEVEL
+	select HCC_FAF if !HCC_DEVEL
+	select HCC_GIPC if !HCC_DEVEL
+	select HCC_PROC if !HCC_DEVEL
+	select HCC_GPM if !HCC_DEVEL
+	select HCC_GSCHED if !HCC_DEVEL
+	help
+	  Say Y if you want to use the HCC features.	
+
+comment "HCC requires kernel preemption to be fully disabled (PREEMPT_NONE)"
+	depends on !PREEMPT_NONE
+
+comment "HCC does not support access key retention (KEYS)"
+	depends on KEYS
+
+comment "HCC does not support 32 bits emulation (COMPAT)"
+	depends on COMPAT
+
+config HCC_DEVEL
+	bool "Allow to build a subset of HCC (!! HCC development only !!)"
+	depends on HCC
+	default n
+	help
+	  The only reason to enable this, is that you intend to port HCC
+		on a new architecture.
+
+		Just say N, and forget about it.
+
+config HCC_TOOLS
+	bool "Tools"
+	depends on HCC
+	help
+	  Common library in HCC (without communication)
+
+config HCC_COMMUNICATION_FRAMEWORK
+       bool "Communication layer"
+       depends on HCC
+       select TIPC
+       select HCC_GRPC
+       help
+         All-purpose communication layer
+
+config HCC_AUTONODEID
+	bool "Allow node id to bet set automatically"
+	depends on HCC_COMMUNICATION_FRAMEWORK
+	default y
+	help
+	  Compile support to let the kernel automatically set the node id.
+	  The method to compute the node id can be chosen with kernel boot
+	  parameter "autonodeid", which default value can be changed with
+	  the choice menu below. Available methods are described in that
+	  menu.
+
+	  Enabling this option will use 8 bits instead of 7 bits for node ids,
+	  which doubles the size of various node id masks, especially used in
+	  GDM metadata.
+
+	  If unsure, say Y.
+
+choice
+	prompt "Default value of boot parameter autonodeid"
+	default HCC_AUTONODEID_ON
+	depends on HCC_AUTONODEID
+
+config HCC_AUTONODEID_ON
+	bool "IP address (autonodeid=1)"
+	help
+	  During the boot the kernel must be able to get an IP address
+	  (dhcp, command line, etc.), and will set the node id to the least
+	  significant byte of the IP address.
+
+	  In order to avoid any headache, be sure that all your nodes are
+	  on the same /24 network.
+
+	  This value can be overridden by kernel boot parameter autonodeid.
+
+	  If unsure, say Y.
+
+config HCC_AUTONODEID_OFF
+	bool "off (autonodeid=0)"
+	help
+	  The kernel will not attempt to automatically set the node id. A valid
+	  node id must be provided with kernel boot parameter "node_id".
+
+	  This value can be overridden by kernel boot parameter "autonodeid".
+
+	  If unsure, say N.
+
+endchoice
+
+config HCC_GHOTPLUG
+	bool "HCC GHOTPLUG"
+	depends on HCC
+	help
+	  Support for nodes management
+
+config HCC_GHOTPLUG_DEL
+	bool "HCC GHOTPLUG: removal support"
+	depends on HCC_GHOTPLUG
+	help
+	  Support node removal
+
+config HCC_GHOTPLUG_XCH
+	bool "HCC GHOTPLUG: replacement support"
+	depends on HCC_GHOTPLUG
+	help
+	  Support node replacement
+
+config HCC_DISABLE_HEARTBEAT
+       bool "Disable failure detector"
+       depends on HCC_GHOTPLUG
+       help
+         If you don't want automatic reconfiguration on a node failure
+         just select this option.
+
+config HCC_GDM
+	bool "HCC GDM"
+	depends on HCC_COMMUNICATION_FRAMEWORK
+	help
+	  Cluster wide data management. This is the general purpose
+	  mechanism used in HCC to implement distributed
+	  services.
+
+	  If unsure, say Y.
+
+config HCC_GDM_DEBUG
+	def_bool HCC_GDM && HCC_DEBUG
+
+config HCC_GCAP
+	bool "HCC GCAP"
+	depends on HCC
+	help
+	  HCC capabilities mechanism.
+
+	  If unsure, say Y.
+
+config HCC_PROCFS
+	bool "HCC ProcFS"
+	depends on HCC_GDM && HCC
+	help
+	  Global /proc mechanism.
+
+	  If unsure, say Y.
+
+#config HCC_SYNC
+#	bool "HCC Sync"
+#	depends on HCC && HCC_GDM
+#	help
+#	  Synchronization library
+
+config HCC_GMM
+	bool "HCC GMM"
+	depends on HCC && HCC_GDM && !TRACK_DIRTY_PAGES && !COMPACTION && !KSM  && !TRANSPARENT_HUGEPAGE
+	help
+	  HCC's global memory management
+
+config HCC_DVFS
+	bool "Distributed VFS"
+#	depends on HCC_GMM && HCC
+	depends on HCC
+	help
+	  HCC's distributed VFS. This is the HCC basic
+	  bloc for distributed file management.
+
+	  If unsure, say Y.
+
+config HCC_FAF
+	bool "HCC FAF(File access forwarding)"
+	depends on HCC && HCC_DVFS
+	select EPOLL
+	help
+	  Enable migration of open files and streams for those which
+	  cannot be more efficiently managed by other HCC mechanisms.
+
+	  If unsure, say Y.
+
+config HCC_GIPC
+	bool "HCC GIPC"
+	depends on HCC && HCC_GDM && HCC_GMM && IPC_NS
+	help
+	  HCC's global IPC management
+
+config HCC_PROC
+	bool "HCCProc"
+	depends on HCC && HCC_GDM
+	help
+	  Low-level global process management: global PIDs, syscalls affecting
+	  remote tasks (including signals), global proc PID entries.
+
+	  If unsure, say Y.
+
+config HCC_GPM
+	bool "HCC GPM"
+	depends on HCC && HCC_PROC && HCC_GCAP && HCC_GMM && (HCC_DVFS || HCC_FAF)
+	help
+	  HCC Process Management:
+	    process migration, checkpoint/restart, remote clone.
+
+	  If unsure, say Y.
+
+config HCC_GIPC_GPM
+       def_bool HCC_GIPC && HCC_GPM
+
+menuconfig HCC_GSCHED
+	bool "HCC support for global scheduling"
+	depends on HCC
+	select CONFIGFS_FS
+	default y
+	help
+	  Compile support for global gschedulers.
+
+	  This framework allows, at run-time, to build and configure gschedulers
+	  from third parties hot-pluggable components.
+
+	  If you want automagic loading of gscheduler modules while configuring
+	  a gscheduler, you must select "Automatic module loading" (KMOD) in
+	  section "Loadable module support".
+
+	  If unsure, say Y.
+
+if HCC_GSCHED
+
+config HCC_GSCHED_COMPAT
+	bool "Compile components needed to emulate HCC 2.3 hard-coded gscheduler"
+	depends on HCC_GSCHED && HCC_GPM
+	default y
+	help
+	  This option selects the components needed to obtain the same
+	  scheduling policy as in HCC 2.3 hard-coded gscheduler.
+	  See the sample script hcc_legacy_gscheduler located in HCC's
+	  tools to setup this compatible gscheduler.
+
+	  If unsure, say Y.
+
+config HCC_GSCHED_COMPAT_FORCE
+	def_tristate m if HCC_GSCHED_COMPAT
+	select HCC_GSCHED_MIGRATION_PROBE
+	select HCC_GSCHED_MOSIX_PROBE
+	select HCC_GSCHED_THRESHOLD_FILTER
+	select HCC_GSCHED_FREQ_LIMIT_FILTER
+	select HCC_GSCHED_REMOTE_CACHE_FILTER
+	select HCC_GSCHED_MOSIX_LOAD_BALANCER
+	select HCC_GSCHED_ROUND_ROBIN_BALANCER
+
+config HCC_GSCHED_CPU_PROBE
+	tristate "Sample CPU probe"
+	depends on m
+	default n
+	help
+	  Sample CPU probe exposing the CPU load of a node
+
+	  If unsure, say N.
+
+config HCC_GSCHED_MEM_PROBE
+	tristate "Sample memory probe"
+	depends on m
+	default n
+	help
+	  Sample memory probe exposing the total RAM and free RAM available on
+	  a node
+
+	  If unsure, say N.
+
+config HCC_GSCHED_MIGRATION_PROBE
+	tristate "Migration probe"
+	depends on HCC_GPM && m
+	default n
+	help
+	  Probe counting the number of ongoing task migrations out of a node
+	  and registering the last migration event.
+
+	  If unsure, say N.
+
+config HCC_GSCHED_MOSIX_PROBE
+	tristate "MOSIX-like CPU probe"
+	depends on m
+	default n
+	help
+	  MOSIX-like CPU probe exposing the CPU load of a node as well as the
+	  CPU load induced by individual tasks
+
+	  If unsure, say N.
+
+config HCC_GSCHED_THRESHOLD_FILTER
+	tristate "Threshold filter"
+	depends on m
+	default n
+	help
+	  Filter propagating events only if the value exceeds the configured
+	  threshold
+
+	  If unsure, say N.
+
+config HCC_GSCHED_FREQ_LIMIT_FILTER
+	tristate "Frequency limit filter"
+	depends on m
+	default n
+	help
+	  Filter propagating events only if, for a configured action monitored,
+	  no action is ongoing and the last one occured more than a configured
+	  delay before
+
+	  If unsure, say N.
+
+config HCC_GSCHED_REMOTE_CACHE_FILTER
+	tristate "Remote cache filter"
+	depends on m
+	default n
+	help
+	  Filter caching values from the other nodes, at a configured refresh
+	  rate
+
+	  If unsure, say N.
+
+config HCC_GSCHED_ECHO_POLICY
+	tristate "Sample echo policy"
+	depends on m
+	default n
+	help
+	  Sample policy that logs the values read on its ports when update
+	  notifications are received
+
+	  If unsure, say N.
+
+config HCC_GSCHED_MOSIX_LOAD_BALANCER
+	tristate "MOSIX-like load balancing policy"
+	depends on HCC_GPM && m
+	default n
+	help
+	  Migration-based load balancing policy using simplified algorithms
+	  from the CPU load balancing policy found in MOSIX
+
+	  If unsure, say N.
+
+config HCC_GSCHED_ROUND_ROBIN_BALANCER
+	tristate "Round robin balancing policy"
+	depends on m
+	default n
+	help
+	  Policy that selects target nodes in a round robin manner when called
+
+	  If unsure, say N.
+
+endif
+
+config CLUSTER_WIDE_PROC_INFRA
+	bool
+
+config CLUSTER_WIDE_PROC
+	bool "See Cluster wide stats in /proc"
+	depends on HCC
+	default y
+	select CLUSTER_WIDE_PROC_INFRA
+	help
+	  Say yes if you want to see your cluster as a big SMP through the
+	  /proc files (meminfo, cpuinfo, etc).
+	  
+	  If unsure, say Y.
+
+config CLUSTER_WIDE_PROC_CPUINFO
+	bool
+	depends on HCC
+	default CLUSTER_WIDE_PROC || HCC_PROC
+	select CLUSTER_WIDE_PROC_INFRA
+
+config CLUSTER_WIDE_PROC_MEMINFO
+	bool
+	depends on HCC
+	default CLUSTER_WIDE_PROC || HCC_GMM
+	select CLUSTER_WIDE_PROC_INFRA
+
+config CLUSTER_WIDE_PROC_LOADAVG
+	bool
+	depends on HCC
+	default CLUSTER_WIDE_PROC || HCC_PROC
+	select CLUSTER_WIDE_PROC_INFRA
+
+config CLUSTER_WIDE_PROC_STAT
+	bool
+	depends on HCC
+	default CLUSTER_WIDE_PROC || HCC_PROC
+	select CLUSTER_WIDE_PROC_INFRA
+
+config CLUSTER_WIDE_PROC_UPTIME
+	bool
+	depends on HCC
+	default CLUSTER_WIDE_PROC || HCC_PROC
+	select CLUSTER_WIDE_PROC_INFRA
+
+config HCC_SYSCALL_EXIT_HOOK
+        bool "Syscall exit hook"
+	depends on HCC
+	default n
+
+config DEBUG_SEG_FAULT
+	bool "Debug seg faults"
+	depends on HCC
+	default n
+
+config HCC_DEBUG
+	bool "Debug subsystem"
+	depends on HCC
+	default n
+	select DEBUG_FS
+	help
+	  Activate HCC's debug subsystem. With this
+          subsystem, most HCC debugs can be activated
+          dynamically at runtime, after having mounted debugfs. To
+          activate debugs for the other subsystems, you will also
+          have to activate them in their respective source
+          directories.
+
+          This option will increase code size and probably slow
+          down the system.
+
+          If unsure, say N.
+
+endmenu

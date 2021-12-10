@@ -1,5 +1,0 @@
-config HCCGRPC
-	bool "Hcloud-Classic RPC Protocol"
-	depends on TIPC
-	---help---
-	  Cluster-aware Remote Procedure Call (RPC) framework.

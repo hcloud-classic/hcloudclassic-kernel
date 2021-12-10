@@ -1,0 +1,64 @@
+#ifndef __HCC_SYMS__
+#define __HCC_SYMS__
+
+#ifndef __ASSEMBLY__
+
+typedef enum hcc_syms_val {
+	HCC_SYMS_UNDEF, // Must be the first one
+	HCC_SYMS_VM_OPS_NULL,
+	HCC_SYMS_VM_OPS_SHM,
+	HCC_SYMS_VM_OPS_SHMEM,
+	HCC_SYMS_VM_OPS_FILE_GENERIC,
+	HCC_SYMS_VM_OPS_FILE_EXT4,
+	HCC_SYMS_VM_OPS_NFS_FILE,
+	HCC_SYMS_VM_OPS_OCFS2_FILE,
+	HCC_SYMS_VM_OPS_SPECIAL_MAPPING,
+	HCC_SYMS_VM_OPS_MEMORY_GDM_VMOPS,
+	HCC_SYMS_ARCH_UNMAP_AREA,
+	HCC_SYMS_ARCH_UNMAP_AREA_TOPDOWN,
+	HCC_SYMS_ARCH_GET_UNMAP_AREA,
+	HCC_SYMS_ARCH_GET_UNMAP_AREA_TOPDOWN,
+	HCC_SYMS_ARCH_GET_UNMAP_EXEC_AREA,
+
+	/* Bin format structures */
+	HCC_SYMS_BINFMTS_AOUT,
+	HCC_SYMS_BINFMTS_ELF,
+	HCC_SYMS_BINFMTS_ELF_FDPIC,
+	HCC_SYMS_BINFMTS_EM86,
+	HCC_SYMS_BINFMTS_FLAT,
+	HCC_SYMS_BINFMTS_MISC,
+	HCC_SYMS_BINFMTS_SCRIPT,
+	HCC_SYMS_BINFMTS_SOM,
+	HCC_SYMS_BINFMTS_ARCH,
+
+	/* Restart block functions */
+	HCC_SYMS_DO_NO_RESTART_SYSCALL,
+	HCC_SYMS_COMPAT_NANOSLEEP_RESTART,
+	HCC_SYMS_COMPAT_CLOCK_NANOSLEEP_RESTART,
+	HCC_SYMS_HRTIMER_NANOSLEEP_RESTART,
+	HCC_SYMS_POSIX_CPU_NSLEEP_RESTART,
+	HCC_SYMS_DO_RESTART_POLL,
+	HCC_SYMS_FUTEX_WAIT_RESTART,
+
+	/* GDM set operations */
+	HCC_SYMS_GDM_TREE_OPS,
+	HCC_SYMS_GDM_PT_OPS,
+
+	/* DVFS mobility operations */
+	HCC_SYMS_DVFS_MOBILITY_FAF_OPS,
+	HCC_SYMS_DVFS_MOBILITY_REGULAR_OPS,
+
+	HCC_SYMS_TABLE_SIZE // Must be the last one
+} hcc_syms_val_t;
+
+int hcc_syms_register(enum hcc_syms_val v, void* p);
+int hcc_syms_unregister(enum hcc_syms_val v);
+
+enum hcc_syms_val hcc_syms_export(void* p);
+void* hcc_syms_import(enum hcc_syms_val v);
+
+extern int init_hcc_syms(void);
+
+#endif /* __ASSEMBLY__ */
+
+#endif /* __HCC_SYMS__ */

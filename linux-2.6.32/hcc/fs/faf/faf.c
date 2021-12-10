@@ -1,0 +1,312 @@
+/** HCC Open File Access Forwarding System.
+ *  @file faf.c
+ *
+ *  Copyright (C) 2019-2021, Innogrid HCC.
+ */
+#include <linux/file.h>
+#include <linux/fdtable.h>
+#include <linux/magic.h>
+#include <linux/socket.h>
+#include <linux/sched.h>
+
+#include <net/grpc/grpc.h>
+#include <hcc/action.h>
+#include <hcc/faf.h>
+#include <hcc/file.h>
+#include <hcc/file_stat.h>
+#include <hcc/pid.h>
+#include "faf_internal.h"
+#include "faf_server.h"
+#include "faf_hooks.h"
+
+extern struct kmem_cache *faf_client_data_cachep;
+
+void faf_error(struct file *file, const char *function)
+{
+	char *buffer, *filename;
+	filename = alloc_filename(file, &buffer);
+
+	if (!IS_ERR(filename)) {
+		pr_hcc("%d/%s FAF does not support %s - %s\n",
+			     task_pid_knr(current), current->comm,
+			     function, filename);
+		free_filename(buffer);
+	} else {
+		pr_hcc("%d/%s FAF does not support %s\n",
+			     task_pid_knr(current), current->comm,
+			     function);
+	}
+}
+
+/** Add a file in the FAF daemon.
+ *  @author Innogrid HCC
+ *
+ *  @param file       The file to add in the FAF daemon
+ *
+ *  @return   0 if everything ok.
+ *            Negative value otherwise.
+ */
+int setup_faf_file(struct file *file)
+{
+	unsigned int server_fd = 0;
+	int res = 0;
+	struct files_struct *files = first_grpc->files;
+
+	/* Install the file in the destination task file array */
+	if (file->f_flags & O_FAF_SRV) {
+		res = -EALREADY;
+		goto out;
+	}
+
+	server_fd = __get_unused_fd(first_grpc);
+	if (server_fd < 0) {
+		res = server_fd;
+		goto out;
+	}
+
+	spin_lock(&files->file_lock);
+	if (unlikely(file->f_flags & O_FAF_SRV)) {
+		__put_unused_fd(files, server_fd);
+		res = -EALREADY;
+	} else {
+		file->f_flags |= O_FAF_SRV;
+		get_file(file);
+		file->f_faf_srv_index = server_fd;
+		__fd_install(files, server_fd, file);
+	}
+	spin_unlock(&files->file_lock);
+
+out:
+	return res;
+}
+
+/** Close a file in the FAF deamon.
+ *  @author Innogrid HCC
+ *
+ *  @param file    The file to close.
+ */
+int close_faf_file(struct file * file)
+{
+        struct files_struct *files = first_grpc->files;
+        struct file * faf_file;
+        struct fdtable *fdt;
+        int fd = file->f_faf_srv_index;
+
+	BUG_ON (!(file->f_flags & O_FAF_SRV));
+	BUG_ON (file_count(file) != 1);
+
+	/* Remove the file from the FAF server file table */
+
+	spin_lock(&files->file_lock);
+
+        fdt = files_fdtable(files);
+        if (fd >= fdt->max_fds)
+                BUG();
+        faf_file = fdt->fd[fd];
+        if (!faf_file)
+                BUG();
+        BUG_ON (faf_file != file);
+
+        rcu_assign_pointer(fdt->fd[fd], NULL);
+        FD_CLR(fd, fdt->close_on_exec);
+        __put_unused_fd(files, fd);
+
+	spin_unlock(&files->file_lock);
+
+	/* Cleanup HCC flags but not objid to pass through the regular
+	 * kernel close file code plus hcc_put_file() only.
+	 */
+	file->f_flags = file->f_flags & (~O_FAF_SRV);
+
+        return filp_close(faf_file, files);
+}
+
+/** Check if we need to close a FAF server file.
+ *  @author Innogrid HCC
+ *
+ *  @param objid        DVFS object id.
+ *  @param file         The file to check. Must have been a valid pointer to the
+ *                      file, but is allowed to have been freed.
+ *
+ *  We can close a FAF server file if local f_count == 1 and DVFS count == 1.
+ *  This means the FAF server is the last process cluster wide using the file.
+ */
+void __check_close_faf_srv_file(unsigned long objid, struct file *file)
+{
+	struct dvfs_file_struct *dvfs_file;
+	int close_file = 0;
+
+	dvfs_file = get_dvfs_file_struct(objid);
+	/* If dvfs file is NULL, someone else did the job before us */
+	if (dvfs_file->file == NULL)
+		goto done;
+	BUG_ON (dvfs_file->file != file);
+
+	/* Re-check f_count in case it changed during the get_dvfs */
+	if ((dvfs_file->count == 1) && (file_count (file) == 1)) {
+		/* The FAF server file is the last one used in the cluster.
+		 * We can now close it.
+		 */
+		close_file = 1;
+		dvfs_file->file = NULL;
+	}
+
+done:
+	put_dvfs_file_struct (objid);
+
+	if (close_file)
+		close_faf_file(file);
+}
+
+/** Check if we need to close a FAF server file.
+ *  @author Renaud Lottiaux
+ *
+ *  @param file         The file to check. Caller must ensure that it is not
+ *                      freed.
+ *
+ *  We can close a FAF server file if local f_count == 1 and DVFS count == 1.
+ *  This means the FAF server is the last process cluster wide using the file.
+ */
+void check_close_faf_srv_file(struct file *file)
+{
+	unsigned long objid = file->f_objid;
+
+	/* Pre-check the file count to avoid a useless call to get_dvfs */
+	if (file_count (file) != 1)
+		return;
+
+	__check_close_faf_srv_file(objid, file);
+}
+
+void free_faf_file_private_data(struct file *file)
+{
+	if (!(file->f_flags & O_FAF_CLT))
+		return;
+
+	kmem_cache_free (faf_client_data_cachep, file->private_data);
+	file->private_data = NULL;
+}
+
+/** Check if we are closing the last FAF client file.
+ *  @author Innogrid HCC
+ *
+ *  @param file         The file attached to the DVFS struct.
+ *  @param dvfs_file    The DVFS file struct being put.
+ */
+void check_last_faf_client_close(struct file *file,
+				 struct dvfs_file_struct *dvfs_file)
+{
+	faf_client_data_t *data;
+	struct faf_notify_msg msg;
+
+	if(!(file->f_flags & O_FAF_CLT))
+		return;
+
+	/* If DVFS count == 1, there is no more FAF clients, the last count
+	 * being for the FAF server node. In this case, notify the FAF server
+	 * to let it check if it should close the FAF file or not.
+	 */
+	if (dvfs_file->count == 1) {
+		data = file->private_data;
+		msg.server_fd = data->server_fd;
+		msg.objid = file->f_objid;
+
+		grpc_async(GRPC_FAF_NOTIFY_CLOSE, data->server_id,
+			  &msg, sizeof(msg));
+	}
+
+	free_faf_file_private_data(file);
+}
+
+int setup_faf_file_if_needed(struct file *file)
+{
+	int r = 0;
+
+	/* Check if the file is already a FAF file */
+	if (file->f_flags & (O_FAF_CLT | O_FAF_SRV))
+		goto exit;
+
+	/* Check if we can re-open the file */
+	if (file->f_dentry) {
+		umode_t i_mode = file->f_dentry->d_inode->i_mode;
+		unsigned long s_magic = file->f_dentry->d_sb->s_magic;
+
+		if (((s_magic == PROC_SUPER_MAGIC) ||
+		     (s_magic == NFS_SUPER_MAGIC)  ||
+		     (s_magic == OCFS2_SUPER_MAGIC)) &&
+		    (S_ISREG(i_mode) || S_ISDIR(i_mode) || S_ISLNK(i_mode)))
+			goto exit;
+	}
+
+	/* Ok, so, we cannot do something better then using the FAF.
+	 * Let's do it !
+	 */
+	r = setup_faf_file(file);
+exit:
+	return r;
+}
+
+int check_activate_faf(struct task_struct *tsk,
+		       int index,
+		       struct file *file,
+		       struct gpm_action *action)
+{
+	int r = 0;
+
+	/* Index < 0 means a mapped file. We do not use FAF for this  */
+	if (index < 0)
+		goto done;
+
+	/* No need to activate FAF for a checkpoint */
+	if (action->type == GPM_CHECKPOINT)
+		goto done;
+
+/* 	if (file->f_dentry && */
+/* 	    file->f_dentry->d_inode && */
+/* 	    file->f_dentry->d_inode->i_mapping && */
+/* 	    file->f_dentry->d_inode->i_mapping->a_ctnr != NULL) */
+/* 		activate_faf = 0; */
+
+	r = setup_faf_file_if_needed(file);
+	if (r == -EALREADY)
+		r = 0;
+done:
+	return r;
+}
+
+/*****************************************************************************/
+/*                                                                           */
+/*                              INITIALIZATION                               */
+/*                                                                           */
+/*****************************************************************************/
+
+/* FAF Initialisation */
+
+extern int ruaccess_start(void);
+extern void ruaccess_exit(void);
+
+void faf_init ()
+{
+	printk("FAF: initialisation : start\n");
+
+	faf_client_data_cachep = kmem_cache_create("faf_client_data",
+						   sizeof(faf_client_data_t),
+						   0, SLAB_PANIC, NULL);
+
+	ruaccess_start();
+	faf_server_init();
+	faf_hooks_init();
+
+	printk("FAF: initialisation : done\n");
+}
+
+
+
+/* FAF Finalization */
+
+void faf_finalize ()
+{
+	faf_hooks_finalize();
+	faf_server_finalize();
+	ruaccess_exit();
+}
