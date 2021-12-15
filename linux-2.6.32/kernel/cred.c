@@ -182,8 +182,6 @@ EXPORT_SYMBOL(__put_cred);
 void exit_creds(struct task_struct *tsk)
 {
 	struct cred *cred;
-	//printk(KERN_INFO "%s %u exit_creds %p, %p  ",tsk->comm,tsk->pid, tsk->real_cred, tsk->cred);
-	//printk(KERN_INFO "-- usage/subscriber {%d,%d}\n ",tsk->comm,tsk->pid,atomic_read(&tsk->cred->usage),read_cred_subscribers(tsk->cred));
 
 	kdebug("exit_creds(%u,%p,%p,{%d,%d})", tsk->pid, tsk->real_cred, tsk->cred,
 	       atomic_read(&tsk->cred->usage),

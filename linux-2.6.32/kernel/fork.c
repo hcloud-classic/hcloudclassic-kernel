@@ -598,6 +598,16 @@ struct mm_struct * mm_init(struct mm_struct * mm, struct task_struct *p)
 	return NULL;
 }
 
+static void check_mm(struct mm_struct *mm)
+{
+	if (atomic_long_read(&mm->nr_ptes))
+		pr_alert("BUG: non-zero nr_ptes on freeing mm: %ld\n",
+				atomic_long_read(&mm->nr_ptes));
+	if (mm_nr_pmds(mm))
+		pr_alert("BUG: non-zero nr_pmds on freeing mm: %ld\n",
+				mm_nr_pmds(mm));
+}
+
 /*
  * Allocate and initialize an mm_struct.
  */
@@ -624,9 +634,7 @@ void __mmdrop(struct mm_struct *mm)
 	mm_free_pgd(mm);
 	destroy_context(mm);
 	mmu_notifier_mm_destroy(mm);
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	VM_BUG_ON(mm->pmd_huge_pte);
-#endif
+	check_mm(mm);
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -731,9 +739,6 @@ int wait_for_vfork_done(struct task_struct *child,
 				struct completion *vfork)
 {
 	int killed;
-#ifdef CONFIG_HCC_GPM
-	struct completion *vfork_done;
-#endif
 
 	freezer_do_not_count();
 	killed = wait_for_completion_killable(vfork);
@@ -741,16 +746,7 @@ int wait_for_vfork_done(struct task_struct *child,
 
 	if (killed) {
 		task_lock(child);
-#ifdef CONFIG_HCC_GPM
-		vfork_done = child->vfork_done;
-		if (vfork_done) {
-#endif
 		child->vfork_done = NULL;
-#ifdef CONFIG_HCC_GPM
-		}
-		if (child->remote_vfork_done)
-			hcc_vfork_done(vfork_done);
-#endif
 		task_unlock(child);
 	}
 
@@ -1233,7 +1229,16 @@ void __cleanup_signal(struct signal_struct *sig)
 	kmem_cache_free(signal_cachep, sig);
 }
 
+#ifdef CONFIG_HCC_GPM
+static void cleanup_signal(struct task_struct *tsk)
+{
+	struct signal_struct *sig = tsk->signal;
+	struct signal_struct *locked_sig = hcc_signal_exit(sig);
 
+	__cleanup_signal(sig);
+	hcc_signal_unlock(locked_sig);
+}
+#endif
 
 static void copy_flags(unsigned long clone_flags, struct task_struct *p)
 {
@@ -1840,13 +1845,9 @@ bad_fork_cleanup_signal:
 #endif
  	if (!(clone_flags & CLONE_THREAD))
 #ifdef CONFIG_HCC_GPM
-	{
-	    struct signal_struct *locked_sig = hcc_signal_exit(p->signal);
-#endif
+		cleanup_signal(p);
+#else
 		__cleanup_signal(p->signal);
-#ifdef CONFIG_HCC_GPM
-		hcc_signal_unlock(locked_sig);
-	}
 #endif
 
 bad_fork_cleanup_sighand:
