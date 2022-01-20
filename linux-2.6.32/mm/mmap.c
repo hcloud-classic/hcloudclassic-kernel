@@ -2751,6 +2751,14 @@ void exit_mmap(struct mm_struct *mm)
 	 */
 	while (vma)
 		vma = remove_vma(vma);
+
+	if (atomic_long_read(&mm->nr_ptes) >
+			round_up(FIRST_USER_ADDRESS, PMD_SIZE) >> PMD_SHIFT)
+		pr_alert("BUG: nr_ptes warning while freeing mm\n");
+
+	if (mm_nr_pmds(mm) >
+			round_up(FIRST_USER_ADDRESS, PUD_SIZE) >> PUD_SHIFT)
+		pr_alert("BUG: nr_pmds warning while freeing mm\n");
 }
 
 /* Insert vm structure into process list sorted by address
