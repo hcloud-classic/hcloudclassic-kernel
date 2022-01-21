@@ -765,7 +765,7 @@ begin:
 			pending_list = &sma->sem_pending;
 	} else {
 		if (remote)
-			pending_list = &sma->remote_sem_pending;
+			pending_list = &sma->sem_base[semnum].remote_sem_pending;
 		else
 			pending_list = &sma->sem_base[semnum].sem_pending;
 	}
