@@ -673,13 +673,10 @@ enum grpc_error
 grpc_unpack_from(struct grpc_desc* desc, hcc_node_t node,
 		int flags, void* data, size_t size)
 {
-	printk("grpc_unpack_from start hcc_node_t %d \n",node);
 	switch(desc->type){
 	case GRPC_RQ_CLT:
-		printk("GRPC_RQ_CLT ENTER\n");
 		return __grpc_unpack_from_node(desc, node, flags, data, size);
 	case GRPC_RQ_SRV:
-		printk("GRPC_RQ_SRV ENTER\n");
 		if(node == desc->client)
 			return __grpc_unpack_from_node(desc, node, flags, data, size);
 		return 0;
