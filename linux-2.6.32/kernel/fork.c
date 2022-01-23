@@ -1857,13 +1857,15 @@ bad_fork_cleanup_semundo:
 	exit_sem(p);
 bad_fork_cleanup_audit:
 	audit_free(p);
-#ifdef CONFIG_HCC_GDM
+#ifndef CONFIG_HCC_GDM
+bad_fork_cleanup_perf:
+	perf_event_free_task(p);
+#else
 bad_fork_cleanup_gdm_info:
+	perf_event_free_task(p);
 	if (p->gdm_info)
 		kmem_cache_free(gdm_info_cachep, p->gdm_info);
 #endif
-bad_fork_cleanup_perf:
-	perf_event_free_task(p);
 bad_fork_cleanup_policy:
 #ifdef CONFIG_NUMA
 	mpol_put(p->mempolicy);
