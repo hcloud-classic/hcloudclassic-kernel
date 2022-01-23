@@ -26,12 +26,13 @@ struct kmem_cache *semarray_object_cachep;
  *
  *  @author Innogrid HCC
  */
-struct sem_array *create_local_sem(struct ipc_namespace *ns,
+static struct sem_array *create_local_sem(struct ipc_namespace *ns,
 				   struct sem_array *received_sma)
 {
 	struct sem_array *sma;
 	int size_sems;
 	int retval;
+	int i;
 
 	size_sems = received_sma->sem_nsems * sizeof (struct sem);
 	sma = ipc_rcu_alloc(sizeof (*sma) + size_sems);
@@ -58,6 +59,13 @@ struct sem_array *create_local_sem(struct ipc_namespace *ns,
 		goto out;
 	}
 
+	for (i = 0; i < received_sma->sem_nsems; i++) {
+		INIT_LIST_HEAD(&sma->sem_base[i].sem_pending);
+		INIT_LIST_HEAD(&sma->sem_base[i].remote_sem_pending);
+		spin_lock_init(&sma->sem_base[i].lock);
+	}
+
+	sma->complex_count = 0;
 	INIT_LIST_HEAD(&sma->sem_pending);
 	INIT_LIST_HEAD(&sma->list_id);
 	INIT_LIST_HEAD(&sma->remote_sem_pending);
@@ -77,9 +85,9 @@ static inline void update_sem_queues(struct sem_array *sma,
 				     struct sem_array *received_sma)
 {
 	struct sem_queue *q, *tq, *local_q;
+	int i;
 
 	BUG_ON(!list_empty(&received_sma->sem_pending));
-
 	/* adding (to local sem) semqueues that are not local */
 	list_for_each_entry_safe(q, tq, &received_sma->remote_sem_pending, list) {
 
@@ -114,8 +122,46 @@ static inline void update_sem_queues(struct sem_array *sma,
 		else
 			list_add(&q->list, &sma->remote_sem_pending);
 	}
-
 	BUG_ON(!list_empty(&received_sma->remote_sem_pending));
+
+	for (i = 0; i < received_sma->sem_nsems; i++) {
+		BUG_ON(!list_empty(&received_sma->sem_base[i].sem_pending));
+		/* adding (to local sem) semqueues that are not local */
+		list_for_each_entry_safe(q, tq, &received_sma->sem_base[i].remote_sem_pending, list) {
+
+			int is_local = 0;
+
+			/* checking if the sem_queue is local */
+			list_for_each_entry(local_q, &sma->sem_base[i].sem_pending, list) {
+
+				/* comparing local_q->pid to q->pid is not sufficient
+				*  as they contains only tgid, two or more threads
+				*  can be pending.
+				*/
+				if (task_pid_knr(local_q->sleeper) == remote_sleeper_pid(q)) {
+					/* the sem_queue is local */
+					is_local = 1;
+
+					BUG_ON(q->undo && !local_q->undo);
+					BUG_ON(local_q->undo && !q->undo);
+					local_q->undo = q->undo;
+					/* No need to update q->status, as it is done when
+					needed in handle_ipcsem_wake_up_process */
+					BUG_ON(q->status == IN_WAKEUP);
+					BUG_ON(local_q->status != q->status);
+
+					goto sem_base_next;
+				}
+			}
+		sem_base_next:
+			list_del(&q->list);
+			if (is_local)
+				free_semqueue(q);
+			else
+				list_add(&q->list, &sma->sem_base[i].remote_sem_pending);
+		}
+		BUG_ON(!list_empty(&received_sma->sem_base[i].remote_sem_pending));
+	}
 }
 
 /** Update a local instance of a remotly existing IPC semaphore.
@@ -132,6 +178,7 @@ static void update_local_sem(struct sem_array *local_sma,
 	/* getting new values from received semaphore */
 	local_sma->sem_otime = received_sma->sem_otime;
 	local_sma->sem_ctime = received_sma->sem_ctime;
+	local_sma->complex_count = received_sma->complex_count;
 	memcpy(local_sma->sem_base, received_sma->sem_base, size_sems);
 
 	/* updating sem_undos list */
@@ -373,6 +420,8 @@ static inline void __export_semqueues(struct grpc_desc *desc,
 {
 	struct sem_queue *q;
 	long nb_sem_pending = 0;
+	long nb_sem_base_pending;
+	int i = 0;
 
 	/* count local sem_pending */
 	list_for_each_entry(q, &sma->sem_pending, list)
@@ -391,6 +440,29 @@ static inline void __export_semqueues(struct grpc_desc *desc,
 	/* send remote sem_queues */
 	list_for_each_entry(q, &sma->remote_sem_pending, list)
 		__export_one_remote_semqueue(desc, q);
+
+	/* sem_base */
+	for (i = 0; i < sma->sem_nsems; i++) {
+		nb_sem_base_pending = 0;
+
+		/* count local sem_pending */
+		list_for_each_entry(q, &sma->sem_base[i].sem_pending, list)
+			nb_sem_base_pending++;
+
+		/* count remote sem_pending */
+		list_for_each_entry(q, &sma->sem_base[i].remote_sem_pending, list)
+			nb_sem_base_pending++;
+
+		grpc_pack_type(desc, nb_sem_base_pending);
+
+		/* send local sem_queues */
+		list_for_each_entry(q, &sma->sem_base[i].sem_pending, list)
+			__export_one_local_semqueue(desc, q);
+
+		/* send remote sem_queues */
+		list_for_each_entry(q, &sma->sem_base[i].remote_sem_pending, list)
+			__export_one_remote_semqueue(desc, q);
+	}
 }
 
 /** Export an object
@@ -425,6 +497,7 @@ static inline int __import_semarray(struct grpc_desc *desc,
 {
 	struct sem_array buffer;
 	int size_sems;
+	int i;
 
 	grpc_unpack_type(desc, buffer);
 	sem_object->imported_sem = buffer;
@@ -438,6 +511,11 @@ static inline int __import_semarray(struct grpc_desc *desc,
 	grpc_unpack(desc, 0, sem_object->mobile_sem_base, size_sems);
 	sem_object->imported_sem.sem_base = sem_object->mobile_sem_base;
 
+	for (i = 0; i < sem_object->imported_sem.sem_nsems; i++) {
+		INIT_LIST_HEAD(&sem_object->imported_sem.sem_base[i].sem_pending);
+		INIT_LIST_HEAD(&sem_object->imported_sem.sem_base[i].remote_sem_pending);
+		spin_lock_init(&sem_object->imported_sem.sem_base[i].lock);
+	}
 	INIT_LIST_HEAD(&sem_object->imported_sem.sem_pending);
 	INIT_LIST_HEAD(&sem_object->imported_sem.remote_sem_pending);
 	INIT_LIST_HEAD(&sem_object->imported_sem.list_id);
@@ -539,16 +617,17 @@ exit:
 static inline int __import_semqueues(struct grpc_desc *desc,
 				     struct sem_array *sma)
 {
-	long nb_sempending, i;
-	int r;
+	long nb_sem_pending;
+	long nb_sem_base_pending;
+	int i, j, r;
 
-	r = grpc_unpack_type(desc, nb_sempending);
+	r = grpc_unpack_type(desc, nb_sem_pending);
 	if (r)
 		goto err;
 
 	BUG_ON(!list_empty(&sma->remote_sem_pending));
 
-	for (i=0; i < nb_sempending; i++) {
+	for (i = 0; i < nb_sem_pending; i++) {
 		r = import_one_semqueue(desc, sma);
 		if (r)
 			goto err;
@@ -557,13 +636,39 @@ static inline int __import_semqueues(struct grpc_desc *desc,
 #ifdef CONFIG_HCC_DEBUG
 	{
 		struct sem_queue *q;
-		i=0;
+		i = 0;
 		list_for_each_entry(q, &sma->remote_sem_pending, list)
 			i++;
 
-		BUG_ON(nb_sempending != i);
+		BUG_ON(nb_sem_pending != i);
 	}
 #endif
+
+	/* sem_base */
+	for (i = 0; i < sma->sem_nsems; i++) {
+		r = grpc_unpack_type(desc, nb_sem_base_pending);
+		if (r)
+			goto err;
+
+		BUG_ON(!list_empty(&sma->sem_base[i].remote_sem_pending));
+
+		for (j = 0; j < nb_sem_base_pending; j++) {
+			r = import_one_semqueue(desc, sma);
+			if (r)
+				goto err;
+		}
+
+#ifdef CONFIG_HCC_DEBUG
+		{
+			struct sem_queue *q;
+			j = 0;
+			list_for_each_entry(q, &sma->sem_base[i].remote_sem_pending, list)
+				j++;
+
+			BUG_ON(nb_sem_base_pending != j);
+		}
+#endif
+	}
 
 err:
 	return r;
