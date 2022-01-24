@@ -452,22 +452,14 @@ int newary(struct ipc_namespace *ns, struct ipc_params *params)
 
 	sma->complex_count = 0;
 	INIT_LIST_HEAD(&sma->sem_pending);
+#ifdef CONFIG_HCC_GIPC
+	INIT_LIST_HEAD(&sma->remote_sem_pending);
+#endif
 	INIT_LIST_HEAD(&sma->list_id);
 	sma->sem_nsems = nsems;
 	sma->sem_ctime = get_seconds();
+
 #ifdef CONFIG_HCC_GIPC
-	INIT_LIST_HEAD(&sma->remote_sem_pending);
-
-	if (is_hcc_gipc(&sem_ids(ns))) {
-		retval = hcc_gipc_sem_newary(ns, sma, nsems);
-		if (retval) {
-			ipc_rcu_putref(sma, sem_rcu_free);
-			return retval;
-		}
-	} else
-
-	sma->sem_perm.hcc_ops = NULL;
-
 	id = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni,
 		       params->requested_id);
 #else
@@ -478,6 +470,17 @@ int newary(struct ipc_namespace *ns, struct ipc_params *params)
 		return id;
 	}
 	ns->used_sems += nsems;
+
+#ifdef CONFIG_HCC_GIPC
+	if (is_hcc_gipc(&sem_ids(ns))) {
+		retval = hcc_gipc_sem_newary(ns, sma, nsems);
+		if (retval) {
+			ipc_rcu_putref(sma, sem_rcu_free);
+			return retval;
+		}
+	} else
+		sma->sem_perm.hcc_ops = NULL;
+#endif
 
 	sem_unlock(sma, -1);
 	rcu_read_unlock();
