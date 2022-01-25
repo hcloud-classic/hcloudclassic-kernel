@@ -124,6 +124,7 @@ static inline void update_sem_queues(struct sem_array *sma,
 	}
 	BUG_ON(!list_empty(&received_sma->remote_sem_pending));
 
+	/* sem_base */
 	for (i = 0; i < received_sma->sem_nsems; i++) {
 		BUG_ON(!list_empty(&received_sma->sem_base[i].sem_pending));
 		/* adding (to local sem) semqueues that are not local */
@@ -566,7 +567,8 @@ static inline void __unimport_semundos(struct sem_array *sma)
 }
 
 static inline int import_one_semqueue(struct grpc_desc *desc,
-				      struct sem_array *sma)
+				      struct sem_array *sma, bool is_sem_base,
+				      int sem_base_index)
 {
 	unique_id_t undo_proc_list_id;
 	struct sem_undo* undo;
@@ -602,7 +604,10 @@ undo_found:
 
 	/* split between remote and local
 	   queues is done in update_local_sem */
-	list_add(&q->list, &sma->remote_sem_pending);
+	if (is_sem_base)
+		list_add(&q->list, &sma->sem_base[sem_base_index].remote_sem_pending);
+	else
+		list_add(&q->list, &sma->remote_sem_pending);
 
 	BUG_ON(!q->sleeper);
 	return r;
@@ -628,7 +633,7 @@ static inline int __import_semqueues(struct grpc_desc *desc,
 	BUG_ON(!list_empty(&sma->remote_sem_pending));
 
 	for (i = 0; i < nb_sem_pending; i++) {
-		r = import_one_semqueue(desc, sma);
+		r = import_one_semqueue(desc, sma, false, 0);
 		if (r)
 			goto err;
 	}
@@ -653,7 +658,7 @@ static inline int __import_semqueues(struct grpc_desc *desc,
 		BUG_ON(!list_empty(&sma->sem_base[i].remote_sem_pending));
 
 		for (j = 0; j < nb_sem_base_pending; j++) {
-			r = import_one_semqueue(desc, sma);
+			r = import_one_semqueue(desc, sma, true, i);
 			if (r)
 				goto err;
 		}
