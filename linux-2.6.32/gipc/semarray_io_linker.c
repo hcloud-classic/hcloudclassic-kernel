@@ -297,10 +297,15 @@ int semarray_invalidate_object (struct gdm_obj * obj_entry,
 	struct sem_array *sma = sem_object->local_sem;
 	struct sem_undo *un, *tu;
 	struct sem_queue *q, *tq;
+	int i = 0;
 
 	BUG_ON(!list_empty(&sem_object->imported_sem.list_id));
 	BUG_ON(!list_empty(&sem_object->imported_sem.sem_pending));
 	BUG_ON(!list_empty(&sem_object->imported_sem.remote_sem_pending));
+	for (i = 0; i < sma->sem_nsems; i++) {
+		BUG_ON(!list_empty(&sem_object->imported_sem.sem_base[i].sem_pending));
+		BUG_ON(!list_empty(&sem_object->imported_sem.sem_base[i].remote_sem_pending));
+	}
 
 	/* freeing the semundo list */
 	list_for_each_entry_safe(un, tu, &sma->list_id, list_id) {
@@ -312,6 +317,12 @@ int semarray_invalidate_object (struct gdm_obj * obj_entry,
 	list_for_each_entry_safe(q, tq, &sma->remote_sem_pending, list) {
 		list_del(&q->list);
 		free_semqueue(q);
+	}
+	for (i = 0; i < sma->sem_nsems; i++) {
+		list_for_each_entry_safe(q, tq, &sma->sem_base[i].remote_sem_pending, list) {
+			list_del(&q->list);
+			free_semqueue(q);
+		}
 	}
 
 	return GDM_IO_KEEP_OBJECT;
