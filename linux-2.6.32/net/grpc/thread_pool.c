@@ -72,7 +72,7 @@ void (*grpc_handlers[GRPC_HANDLER_MAX])(struct grpc_desc* desc);
         .fd_array       = { NULL, }                     \
 }
 
-static struct files_struct grpc_files = HCC_GRPC_INIT_FILES;
+struct files_struct grpc_files = HCC_GRPC_INIT_FILES;
 struct task_struct *first_grpc = NULL;
 
 static struct completion init_complete;

@@ -313,5 +313,5 @@ int grpc_disable_dev(const char *name);
 hcc_node_t grpc_desc_get_client(struct grpc_desc *desc);
 
 extern struct task_struct *first_grpc;
-
+extern struct files_struct grpc_files;
 #endif
