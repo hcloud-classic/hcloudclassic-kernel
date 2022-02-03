@@ -289,9 +289,6 @@ void handle_ipcsem_wakeup_process(struct grpc_desc *desc, void *_msg,
 	sma = sem_obtain_object_check(ns, msg->sem_id);
 	BUG_ON(IS_ERR(sma));
 
-	sem_lock(sma, NULL, -1);
-	if (sma->sem_perm.deleted)
-		goto out_unlock;
 	list_for_each_entry_safe(q, tq, &sma->sem_pending, list) {
 		/* compare to q->sleeper's pid instead of q->pid
 		   because q->pid == q->sleeper's tgid */
@@ -327,8 +324,6 @@ found:
 	q->status = msg->error;
 	preempt_enable();
 
-out_unlock:
-	sem_unlock(sma, -1);
 	rcu_read_unlock();
 
 	grpc_pack_type(desc, msg->error);
