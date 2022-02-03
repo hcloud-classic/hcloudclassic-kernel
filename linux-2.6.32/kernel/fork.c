@@ -1501,14 +1501,15 @@ struct task_struct *copy_process(unsigned long clone_flags,
 
 	retval = perf_event_init_task(p);
 	if (retval)
-		goto bad_fork_cleanup_policy;
-
-	if ((retval = audit_alloc(p)))
 #ifdef CONFIG_HCC_GDM
 		goto bad_fork_cleanup_gdm_info;
 #else
-		goto bad_fork_cleanup_perf;
+		goto bad_fork_cleanup_policy;
 #endif /* CONFIG_HCC_GDM */
+
+	if ((retval = audit_alloc(p)))
+		goto bad_fork_cleanup_perf;
+
 	/* copy all the process information */
 	if ((retval = copy_semundo(clone_flags, p)))
 		goto bad_fork_cleanup_audit;
@@ -1857,12 +1858,10 @@ bad_fork_cleanup_semundo:
 	exit_sem(p);
 bad_fork_cleanup_audit:
 	audit_free(p);
-#ifndef CONFIG_HCC_GDM
 bad_fork_cleanup_perf:
 	perf_event_free_task(p);
-#else
+#ifdef CONFIG_HCC_GDM
 bad_fork_cleanup_gdm_info:
-	perf_event_free_task(p);
 	if (p->gdm_info)
 		kmem_cache_free(gdm_info_cachep, p->gdm_info);
 #endif
