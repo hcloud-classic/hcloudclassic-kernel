@@ -517,7 +517,7 @@ static void acpi_map_cpu2node(acpi_handle handle, int cpu, int physid)
 #endif
 }
 
-static int _acpi_map_lsapic(acpi_handle handle, int physid, int *pcpu)
+static int __cpuinit _acpi_map_lsapic(acpi_handle handle, int physid, int *pcpu)
 {
 	cpumask_var_t tmp_map, new_map;
 	int cpu;
