@@ -1661,10 +1661,7 @@ static struct sem_undo *find_alloc_undo(struct ipc_namespace *ns, int semid)
 	/* step 2: allocate new undo structure */
 	new = kzalloc(sizeof(struct sem_undo) + sizeof(short)*nsems, GFP_KERNEL);
 	if (!new) {
-#ifdef CONFIG_HCC_GIPC
-		sem_unlock(sma, -1);
-		rcu_read_unlock();
-#else
+#ifndef CONFIG_HCC_GIPC
 		ipc_rcu_putref(sma, ipc_rcu_free);
 #endif
 		return ERR_PTR(-ENOMEM);
