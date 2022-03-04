@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.32-hcc_xeon
-# Wed Jan 26 14:57:57 2022
+# Fri Mar  4 16:11:57 2022
 #
 CONFIG_64BIT=y
 # CONFIG_X86_32 is not set
@@ -1415,8 +1415,10 @@ CONFIG_DL2K=m
 CONFIG_E1000=y
 CONFIG_E1000E=y
 CONFIG_IP1000=m
-# CONFIG_IGB is not set
-# CONFIG_IGBVF is not set
+CONFIG_IGB=y
+CONFIG_IGB_HWMON=y
+CONFIG_IGB_DCA=y
+CONFIG_IGBVF=y
 CONFIG_NS83820=m
 # CONFIG_HAMACHI is not set
 # CONFIG_YELLOWFIN is not set
@@ -1435,12 +1437,17 @@ CONFIG_R8169=y
 # CONFIG_JME is not set
 # CONFIG_PCH_GBE is not set
 CONFIG_NETDEV_10000=y
+CONFIG_MDIO=y
 # CONFIG_CHELSIO_T1 is not set
 # CONFIG_CHELSIO_T3 is not set
 # CONFIG_CHELSIO_T4 is not set
 # CONFIG_CHELSIO_T4VF is not set
 # CONFIG_ENIC is not set
-# CONFIG_IXGBE is not set
+CONFIG_IXGBE=y
+CONFIG_IXGBE_HWMON=y
+CONFIG_IXGBE_DCA=y
+# CONFIG_IXGBE_DCB is not set
+# CONFIG_IXGBE_PTP is not set
 CONFIG_IXGBEVF=y
 CONFIG_IXGB=y
 CONFIG_I40E=y
