@@ -2674,17 +2674,6 @@ config IXGBE
 	  To compile this driver as a module, choose M here. The module
 	  will be called ixgbe.
 
-config IXGBE_VXLAN
-	bool "Virtual eXtensible Local Area Network Support"
-	default n
-	depends on IXGBE && VXLAN && !(IXGBE=y && VXLAN=m)
-	---help---
-	  This allows one to create VXLAN virtual interfaces that provide
-	  Layer 2 Networks over Layer 3 Networks. VXLAN is often used
-	  to tunnel virtual network infrastructure in virtualized environments.
-	  Say Y here if you want to use Virtual eXtensible Local Area Network
-	  (VXLAN) in the driver.
-
 config IXGBE_HWMON
 	bool "Intel(R) 10GbE PCI Express adapters HWMON support"
 	default y
@@ -2693,15 +2682,6 @@ config IXGBE_HWMON
 	  Say Y if you want to expose the thermal sensor data on some of
 	  our cards, via a hwmon sysfs interface.
 
-config IXGBE_DCA
-	bool "Direct Cache Access (DCA) Support"
-	default y
-	depends on IXGBE && DCA && !(IXGBE=y && DCA=m)
-	---help---
-	  Say Y here if you want to use Direct Cache Access (DCA) in the
-	  driver.  DCA is a method for warming the CPU cache before data
-	  is used, with the intent of lessening the impact of cache misses.
-
 config IXGBE_DCB
 	bool "Data Center Bridging (DCB) Support"
 	default n
@@ -2709,17 +2689,6 @@ config IXGBE_DCB
 	---help---
 	  Say Y here if you want to use Data Center Bridging (DCB) in the
 	  driver.
-
-	  If unsure, say N.
-
-config IXGBE_PTP
-	bool "PTP Clock Support"
-	default n
-	depends on IXGBE && PTP_1588_CLOCK
-	---help---
-	  Say Y here if you want support for 1588 Timestamping with a
-	  PHC device, using the PTP 1588 Clock support. This is
-	  required to enable timestamping support for the device.
 
 	  If unsure, say N.
 
