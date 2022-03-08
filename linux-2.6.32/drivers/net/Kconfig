@@ -2692,6 +2692,15 @@ config IXGBE_DCB
 
 	  If unsure, say N.
 
+config IXGBE_DISABLE_PACKET_SPLIT
+	bool "Disable packet split"
+	default n
+	depends on IXGBE
+	---help---
+	  Say Y here if you want to disable packet split in the driver.
+
+	  If unsure, say N.
+
 config IXGBEVF
        tristate "Intel(R) 82599 Virtual Function Ethernet support"
        depends on PCI_MSI
